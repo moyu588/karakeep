@@ -43,6 +43,7 @@ import BookmarkFormattedCreatedAt from "./BookmarkFormattedCreatedAt";
 import BookmarkOwnerIcon from "./BookmarkOwnerIcon";
 import { ArchivedActionIcon, FavouritedActionIcon } from "./icons";
 import { NotePreview } from "./NotePreview";
+import BookmarkLists from "./BookmarkLists";
 import TagList from "./TagList";
 
 interface Props {
@@ -359,6 +360,7 @@ function ListView({
               />
             </div>
           )}
+          <BookmarkLists bookmark={bookmark} />
         </div>
         <BottomRow footer={footer} bookmark={bookmark} />
       </div>
@@ -422,6 +424,7 @@ function GridView({
               />
             </div>
           )}
+          <BookmarkLists bookmark={bookmark} />
         </div>
         <BottomRow footer={footer} bookmark={bookmark} />
       </div>
@@ -478,6 +481,10 @@ function CompactView({
           {footer && (
             <p className="flex shrink-0 gap-2 text-gray-500">•{footer}</p>
           )}
+          <BookmarkLists
+            bookmark={bookmark}
+            className="flex shrink-0 gap-1 overflow-hidden"
+          />
           <p className="text-gray-500">•</p>
           <Link
             href={`/dashboard/preview/${bookmark.id}`}
