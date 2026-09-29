@@ -33,6 +33,12 @@ describe("JevClient.chooseEquivalentTag", () => {
         });
         expect(body.questions).toHaveProperty("tagMapping.criteria.ip检测");
         expect(body.questions).toHaveProperty("tagMapping.criteria.NONE");
+        const instructions = (
+          body.questions as { tagMapping: { instructions: string } }
+        ).tagMapping.instructions;
+        expect(instructions).toContain("IP查询");
+        expect(instructions).toContain("安全检测");
+        expect(instructions).toContain("Web搜索");
         return new Response(
           JSON.stringify({
             answers: {
