@@ -73,3 +73,6 @@ auth_failures.log
 .codex
 .claude/worktrees
 jean.json
+
+# Local isolated feature-test environment (contains generated secrets)
+.test/
