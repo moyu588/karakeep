@@ -1,4 +1,4 @@
-import { experimental_trpcMiddleware } from "@trpc/server";
+import { TRPCError, experimental_trpcMiddleware } from "@trpc/server";
 import { z } from "zod";
 
 import {
@@ -9,6 +9,13 @@ import {
   zTagListValidatedRequestSchema,
   zUpdateTagRequestSchema,
 } from "@karakeep/shared/types/tags";
+import { and, eq } from "drizzle-orm";
+import {
+  bookmarkTags,
+  tagAliases,
+  tagReviewSuggestions,
+} from "@karakeep/db/schema";
+import { normalizeTagNameForAlias } from "@karakeep/shared/tagGovernance";
 
 import { addLogFields } from "@karakeep/shared-server";
 
@@ -122,5 +129,160 @@ export const tagsAppRouter = router({
             }
           : undefined,
       });
+    }),
+  listSuggestions: tagsProcedure
+    .output(
+      z.object({
+        suggestions: z.array(
+          z.object({
+            id: z.string(),
+            candidateName: z.string(),
+            suggestedTagId: z.string().nullable(),
+            suggestedTagName: z.string().nullable(),
+            confidence: z.number().nullable(),
+            createdAt: z.date(),
+          }),
+        ),
+      }),
+    )
+    .query(async ({ ctx }) => {
+      const rows = await ctx.db
+        .select({
+          id: tagReviewSuggestions.id,
+          candidateName: tagReviewSuggestions.candidateName,
+          suggestedTagId: tagReviewSuggestions.suggestedTagId,
+          suggestedTagName: bookmarkTags.name,
+          confidence: tagReviewSuggestions.confidence,
+          createdAt: tagReviewSuggestions.createdAt,
+        })
+        .from(tagReviewSuggestions)
+        .leftJoin(
+          bookmarkTags,
+          eq(tagReviewSuggestions.suggestedTagId, bookmarkTags.id),
+        )
+        .where(
+          and(
+            eq(tagReviewSuggestions.userId, ctx.user.id),
+            eq(tagReviewSuggestions.status, "pending"),
+          ),
+        );
+
+      return { suggestions: rows };
+    }),
+  resolveSuggestion: tagsProcedure
+    .input(
+      z.object({
+        suggestionId: z.string(),
+        action: z.enum(["merge", "dismiss"]),
+      }),
+    )
+    .output(z.object({ success: z.boolean() }))
+    .mutation(async ({ input, ctx }) => {
+      const [suggestion] = await ctx.db
+        .select()
+        .from(tagReviewSuggestions)
+        .where(
+          and(
+            eq(tagReviewSuggestions.id, input.suggestionId),
+            eq(tagReviewSuggestions.userId, ctx.user.id),
+            eq(tagReviewSuggestions.status, "pending"),
+          ),
+        )
+        .limit(1);
+
+      if (!suggestion) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Suggestion not found",
+        });
+      }
+
+      if (input.action === "merge") {
+        if (!suggestion.suggestedTagId) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "This suggestion has no suggested tag",
+          });
+        }
+
+        const [target] = await ctx.db
+          .select({ id: bookmarkTags.id, name: bookmarkTags.name })
+          .from(bookmarkTags)
+          .where(
+            and(
+              eq(bookmarkTags.id, suggestion.suggestedTagId),
+              eq(bookmarkTags.userId, ctx.user.id),
+            ),
+          )
+          .limit(1);
+
+        if (!target) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Suggested tag no longer exists",
+          });
+        }
+
+        if (
+          normalizeTagNameForAlias(suggestion.candidateName) ===
+          normalizeTagNameForAlias(target.name)
+        ) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Candidate and target tags are identical",
+          });
+        }
+
+        const [existingCandidate] = await ctx.db
+          .select({ id: bookmarkTags.id })
+          .from(bookmarkTags)
+          .where(
+            and(
+              eq(bookmarkTags.userId, ctx.user.id),
+              eq(
+                bookmarkTags.normalizedName,
+                normalizeTagNameForAlias(suggestion.candidateName),
+              ),
+            ),
+          )
+          .limit(1);
+
+        if (existingCandidate && existingCandidate.id !== target.id) {
+          await Tag.merge(ctx, {
+            intoTagId: target.id,
+            fromTagIds: [existingCandidate.id],
+          });
+        }
+
+        await ctx.db
+          .insert(tagAliases)
+          .values({
+            userId: ctx.user.id,
+            aliasName: suggestion.candidateName,
+            aliasNormalizedName: normalizeTagNameForAlias(
+              suggestion.candidateName,
+            ),
+            targetTagId: target.id,
+            source: "manual",
+          })
+          .onConflictDoUpdate({
+            target: [tagAliases.userId, tagAliases.aliasNormalizedName],
+            set: {
+              aliasName: suggestion.candidateName,
+              targetTagId: target.id,
+              source: "manual" as const,
+            },
+          });
+      }
+
+      await ctx.db
+        .update(tagReviewSuggestions)
+        .set({
+          status: input.action === "merge" ? "accepted" : "dismissed",
+          resolvedAt: new Date(),
+        })
+        .where(eq(tagReviewSuggestions.id, suggestion.id));
+
+      return { success: true };
     }),
 });

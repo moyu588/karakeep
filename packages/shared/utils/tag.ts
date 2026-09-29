@@ -40,7 +40,7 @@ export function getPotentialRelevantTagsPrompt(
   potentialRelevantTags?: string[],
 ): string {
   if (potentialRelevantTags && potentialRelevantTags.length > 0) {
-    return `- Similar bookmarks were tagged with the following tags (reuse if possible, ignore if irrelevant): ${potentialRelevantTags.join(", ")}`;
+    return `- CANONICAL_TAGS contains the user's existing tags. Prefer these exact tags when they cover a concept, and copy their spelling exactly. Do NOT create synonyms, translated duplicates, spelling variants, or punctuation variants of these tags. Create a new tag only when no existing tag covers the concept.\n- CANONICAL_TAGS: [${potentialRelevantTags.join(", ")}]`;
   }
   return "";
 }

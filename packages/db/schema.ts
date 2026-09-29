@@ -630,6 +630,70 @@ export const listInvitations = sqliteTable(
   ],
 );
 
+export const tagAliases = sqliteTable(
+  "tagAliases",
+  {
+    id: text("id")
+      .notNull()
+      .primaryKey()
+      .$defaultFn(() => createId()),
+    userId: text("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // Normalized using the same rules as bookmarkTags.normalizedName.
+    aliasNormalizedName: text("aliasNormalizedName").notNull(),
+    aliasName: text("aliasName").notNull(),
+    targetTagId: text("targetTagId")
+      .notNull()
+      .references(() => bookmarkTags.id, { onDelete: "cascade" }),
+    source: text("source", { enum: ["merge", "ai", "manual"] })
+      .notNull()
+      .default("manual"),
+    createdAt: createdAtField(),
+  },
+  (ta) => [
+    unique("tagAliases_user_alias_unique").on(
+      ta.userId,
+      ta.aliasNormalizedName,
+    ),
+    index("tagAliases_user_idx").on(ta.userId),
+    index("tagAliases_target_tag_idx").on(ta.targetTagId),
+  ],
+);
+
+export const tagReviewSuggestions = sqliteTable(
+  "tagReviewSuggestions",
+  {
+    id: text("id")
+      .notNull()
+      .primaryKey()
+      .$defaultFn(() => createId()),
+    userId: text("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    candidateName: text("candidateName").notNull(),
+    candidateNormalizedName: text("candidateNormalizedName").notNull(),
+    suggestedTagId: text("suggestedTagId").references(() => bookmarkTags.id, {
+      onDelete: "cascade",
+    }),
+    confidence: real("confidence"),
+    status: text("status", {
+      enum: ["pending", "accepted", "dismissed"],
+    })
+      .notNull()
+      .default("pending"),
+    createdAt: createdAtField(),
+    resolvedAt: integer("resolvedAt", { mode: "timestamp" }),
+  },
+  (trs) => [
+    unique("tagReviewSuggestions_user_candidate_unique").on(
+      trs.userId,
+      trs.candidateNormalizedName,
+    ),
+    index("tagReviewSuggestions_user_status_idx").on(trs.userId, trs.status),
+  ],
+);
+
 export const customPrompts = sqliteTable(
   "customPrompts",
   {

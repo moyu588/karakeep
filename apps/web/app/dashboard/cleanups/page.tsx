@@ -1,3 +1,4 @@
+import { TagReviewSuggestions } from "@/components/dashboard/cleanups/TagReviewSuggestions";
 import { TagDuplicationDetection } from "@/components/dashboard/cleanups/TagDuplicationDetention";
 import { Separator } from "@/components/ui/separator";
 import { useTranslation } from "@/lib/i18n/server";
@@ -14,6 +15,12 @@ export default async function Cleanups() {
         {t("cleanups.cleanups")}
       </span>
       <Separator />
+      <span className="flex items-center gap-1 text-xl">
+        <Tags />
+        待确认 Tag 建议
+      </span>
+      <Separator />
+      <TagReviewSuggestions />
       <span className="flex items-center gap-1 text-xl">
         <Tags />
         {t("cleanups.duplicate_tags.title")}

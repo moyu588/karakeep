@@ -32,6 +32,7 @@ import { buildTextPrompt } from "@karakeep/shared/prompts.server";
 import { DequeuedJob, EnqueueOptions } from "@karakeep/shared/queueing";
 import { RuleEngine } from "@karakeep/trpc/lib/ruleEngine";
 import { Bookmark } from "@karakeep/trpc/models/bookmarks";
+import { resolveTagNames } from "@karakeep/trpc/lib/tagResolver";
 import { WebhooksService } from "@karakeep/trpc/models/webhooks.service";
 
 /**
@@ -714,7 +715,34 @@ export async function runTagging(
     return;
   }
 
-  await connectTags(bookmarkId, tags, bookmark.userId);
+  let tagsToConnect = tags;
+  if (serverConfig.tagGovernance.enabled) {
+    try {
+      const resolvedTags = await resolveTagNames({
+        db,
+        userId: bookmark.userId,
+        tags,
+        semanticResolution: true,
+        inferenceClient,
+      });
+      tagsToConnect = [...new Set(resolvedTags.map((tag) => tag.resolved))];
+      const remapped = tagsToConnect.filter((tag) =>
+        tags.includes(tag) ? false : true,
+      );
+      if (remapped.length > 0) {
+        logger.info(
+          `[inference][${jobId}] Tag governance remapped tags for bookmark "${bookmark.id}": ${tags.join(", ")} -> ${tagsToConnect.join(", ")}`,
+        );
+      }
+    } catch (error) {
+      // Never fail the tagging job because semantic governance is unavailable.
+      logger.error(
+        `[inference][${jobId}] Tag governance failed for bookmark "${bookmark.id}": ${error}`,
+      );
+    }
+  }
+
+  await connectTags(bookmarkId, tagsToConnect, bookmark.userId);
 
   // Propagate priority to child jobs
   const enqueueOpts: EnqueueOptions = {

@@ -24,6 +24,9 @@ import {
   zUpdateTagRequestSchema,
 } from "@karakeep/shared/types/tags";
 import { switchCase } from "@karakeep/shared/utils/switch";
+import { normalizeTagNameForAlias } from "@karakeep/shared/tagGovernance";
+import { tagAliases } from "@karakeep/db/schema";
+import { resolveTagNames } from "../lib/tagResolver";
 
 import { AuthedContext } from "..";
 
@@ -60,11 +63,35 @@ export class Tag {
     ctx: AuthedContext,
     input: z.infer<typeof zCreateTagRequestSchema>,
   ): Promise<Tag> {
+    const [resolvedName] = await resolveTagNames({
+      db: ctx.db,
+      userId: ctx.user.id,
+      tags: [input.name],
+    });
+
+    // Resolver may map an alias or alternate spelling to an existing tag.
+    // In that case, creation should resolve to the canonical tag instead of
+    // hitting the unique constraint.
+    const [existingTag] = await ctx.db
+      .select()
+      .from(bookmarkTags)
+      .where(
+        and(
+          eq(bookmarkTags.userId, ctx.user.id),
+          eq(bookmarkTags.name, resolvedName.resolved),
+        ),
+      )
+      .limit(1);
+
+    if (existingTag) {
+      return new Tag(ctx, existingTag);
+    }
+
     try {
       const [result] = await ctx.db
         .insert(bookmarkTags)
         .values({
-          name: input.name,
+          name: resolvedName.resolved,
           userId: ctx.user.id,
         })
         .returning();
@@ -246,8 +273,8 @@ export class Tag {
       });
     }
 
-    const { deletedTags, affectedBookmarks } = await ctx.db.transaction(
-      (trx) => {
+    const { deletedTags, deletedTagNames, affectedBookmarks } =
+      await ctx.db.transaction((trx) => {
         const unlinked = trx
           .delete(tagsOnBookmarks)
           .where(and(inArray(tagsOnBookmarks.tagId, input.fromTagIds)))
@@ -267,6 +294,13 @@ export class Tag {
             .run();
         }
 
+        // Keep historical aliases valid when a former canonical tag is removed.
+        trx
+          .update(tagAliases)
+          .set({ targetTagId: input.intoTagId })
+          .where(inArray(tagAliases.targetTagId, input.fromTagIds))
+          .run();
+
         const deletedTags = trx
           .delete(bookmarkTags)
           .where(
@@ -275,15 +309,44 @@ export class Tag {
               eq(bookmarkTags.userId, ctx.user.id),
             ),
           )
-          .returning({ id: bookmarkTags.id })
+          .returning({ id: bookmarkTags.id, name: bookmarkTags.name })
           .all();
 
         return {
           deletedTags,
+          deletedTagNames: deletedTags.map((t) => t.name),
           affectedBookmarks: unlinked.map((u) => u.bookmarkId),
         };
-      },
-    );
+      });
+
+    const targetTag = affectedTags.find((t) => t.id === input.intoTagId);
+    if (targetTag && deletedTagNames.length > 0) {
+      const [target] = await ctx.db
+        .select({ id: bookmarkTags.id, name: bookmarkTags.name })
+        .from(bookmarkTags)
+        .where(eq(bookmarkTags.id, input.intoTagId))
+        .limit(1);
+      if (target) {
+        await ctx.db
+          .insert(tagAliases)
+          .values(
+            deletedTagNames.map((aliasName) => ({
+              userId: ctx.user.id,
+              aliasName,
+              aliasNormalizedName: normalizeTagNameForAlias(aliasName),
+              targetTagId: target.id,
+              source: "merge" as const,
+            })),
+          )
+          .onConflictDoUpdate({
+            target: [tagAliases.userId, tagAliases.aliasNormalizedName],
+            set: {
+              targetTagId: target.id,
+              source: "merge" as const,
+            },
+          });
+      }
+    }
 
     try {
       await Promise.all(
@@ -334,6 +397,7 @@ export class Tag {
   }
 
   async update(input: z.infer<typeof zUpdateTagRequestSchema>): Promise<void> {
+    const oldName = this.tag.name;
     try {
       const result = await this.ctx.db
         .update(bookmarkTags)
@@ -353,6 +417,29 @@ export class Tag {
       }
 
       this.tag = result[0];
+
+      if (
+        input.name &&
+        normalizeTagNameForAlias(oldName) !==
+          normalizeTagNameForAlias(input.name)
+      ) {
+        await this.ctx.db
+          .insert(tagAliases)
+          .values({
+            userId: this.ctx.user.id,
+            aliasName: oldName,
+            aliasNormalizedName: normalizeTagNameForAlias(oldName),
+            targetTagId: this.tag.id,
+            source: "manual",
+          })
+          .onConflictDoUpdate({
+            target: [tagAliases.userId, tagAliases.aliasNormalizedName],
+            set: {
+              targetTagId: this.tag.id,
+              source: "manual" as const,
+            },
+          });
+      }
 
       try {
         const affectedBookmarks =

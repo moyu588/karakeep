@@ -75,6 +75,7 @@ import {
   router,
 } from "../index";
 import { RuleEngine } from "../lib/ruleEngine";
+import { resolveTagNames } from "../lib/tagResolver";
 import { getBookmarkIdsFromMatcher } from "../lib/search";
 import { reciprocalRankFusion } from "../lib/searchRanking";
 import { Asset } from "../models/assets";
@@ -1301,11 +1302,49 @@ export const bookmarksAppRouter = router({
       };
 
       // Normalize tag names and create new tags outside transaction to reduce transaction duration
-      const normalizedAttachTags = input.attach.map((tag) => ({
+      let normalizedAttachTags = input.attach.map((tag) => ({
         tagId: tag.tagId,
         tagName: tag.tagName ? normalizeTagName(tag.tagName) : undefined,
         attachedBy: tag.attachedBy,
       }));
+      const normalizedDetachTags = await Promise.all(
+        input.detach.map(async (tag) => {
+          if (!tag.tagName) {
+            return tag;
+          }
+          const [resolved] = await resolveTagNames({
+            db: ctx.db,
+            userId: ctx.user.id,
+            tags: [normalizeTagName(tag.tagName)],
+          });
+          return {
+            tagId: tag.tagId,
+            tagName: resolved?.resolved ?? normalizeTagName(tag.tagName),
+          };
+        }),
+      );
+
+      const attachTagNames = normalizedAttachTags
+        .map((tag) => tag.tagName)
+        .filter(
+          (tagName): tagName is string => !!tagName && tagName.length > 0,
+        );
+      if (attachTagNames.length > 0) {
+        const resolvedAttachTags = await resolveTagNames({
+          db: ctx.db,
+          userId: ctx.user.id,
+          tags: attachTagNames,
+        });
+        const resolvedByName = new Map(
+          resolvedAttachTags.map((tag) => [tag.original, tag.resolved]),
+        );
+        normalizedAttachTags = normalizedAttachTags.map((tag) => ({
+          ...tag,
+          tagName: tag.tagName
+            ? (resolvedByName.get(tag.tagName) ?? tag.tagName)
+            : undefined,
+        }));
+      }
 
       {
         // Create new tags
@@ -1326,7 +1365,7 @@ export const bookmarksAppRouter = router({
       // Fetch tag IDs for attachment/detachment now that we know that they all exist
       const [attachTagsWithNames, detachTagsWithNames] = await Promise.all([
         fetchTagIdsWithNames(normalizedAttachTags),
-        fetchTagIdsWithNames(input.detach),
+        fetchTagIdsWithNames(normalizedDetachTags),
       ]);
 
       // Build the attachedBy map from the fetched results

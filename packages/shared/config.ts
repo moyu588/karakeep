@@ -112,6 +112,14 @@ const allEnv = z.object({
     .default("structured"),
   INFERENCE_ENABLE_AUTO_TAGGING: stringBool("true"),
   INFERENCE_ENABLE_AUTO_SUMMARIZATION: stringBool("false"),
+  TITLE_OPTIMIZATION_ENABLED: stringBool("true"),
+  TAG_GOVERNANCE_ENABLED: stringBool("true"),
+  TAG_AUTO_MERGE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.92),
+  TAG_REVIEW_THRESHOLD: z.coerce.number().min(0).max(1).default(0.7),
+  JEV_BASE_URL: z.string().url().optional(),
+  JEV_API_KEY: z.string().optional(),
+  JEV_MODEL: z.string().default("jev-1.13"),
+  JEV_TIMEOUT_SEC: z.coerce.number().default(30),
   OCR_CACHE_DIR: z.string().optional(),
   OCR_LANGS: z
     .string()
@@ -371,6 +379,22 @@ const serverConfigSchema = allEnv.transform((val, ctx) => {
           : val.INFERENCE_OUTPUT_SCHEMA,
       enableAutoTagging: val.INFERENCE_ENABLE_AUTO_TAGGING,
       enableAutoSummarization: val.INFERENCE_ENABLE_AUTO_SUMMARIZATION,
+    },
+    titleOptimization: {
+      enabled: val.TITLE_OPTIMIZATION_ENABLED,
+    },
+    tagGovernance: {
+      enabled: val.TAG_GOVERNANCE_ENABLED,
+      autoMergeThreshold: val.TAG_AUTO_MERGE_THRESHOLD,
+      reviewThreshold: val.TAG_REVIEW_THRESHOLD,
+      jev: val.JEV_BASE_URL
+        ? {
+            baseUrl: val.JEV_BASE_URL,
+            apiKey: val.JEV_API_KEY,
+            model: val.JEV_MODEL,
+            timeoutSec: val.JEV_TIMEOUT_SEC,
+          }
+        : undefined,
     },
     chat: {
       enabled: val.CHAT_ENABLED,

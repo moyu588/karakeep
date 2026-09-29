@@ -15,6 +15,7 @@ import { InferenceClientFactory } from "@karakeep/shared/inference";
 import logger from "@karakeep/shared/logger";
 import { DequeuedJob, getQueueClient } from "@karakeep/shared/queueing";
 
+import { optimizeBookmarkTitle } from "./title";
 import { runSummarization } from "./summarize";
 import { runTagging } from "./tagging";
 
@@ -115,9 +116,37 @@ async function runOpenAI(job: DequeuedJob<ZOpenAIRequest>) {
     case "summarize":
       await runSummarization(bookmarkId, job, inferenceClient);
       break;
-    case "tag":
+    case "tag": {
+      try {
+        const bookmarkForTitle = await db.query.bookmarks.findFirst({
+          where: eq(bookmarks.id, bookmarkId),
+          columns: {
+            id: true,
+            userId: true,
+            title: true,
+          },
+          with: {
+            link: {
+              columns: {
+                url: true,
+                title: true,
+                description: true,
+              },
+            },
+          },
+        });
+        if (bookmarkForTitle) {
+          await optimizeBookmarkTitle(bookmarkForTitle, inferenceClient, job);
+        }
+      } catch (error) {
+        // Title optimization is best-effort; normal tagging should continue.
+        logger.warn(
+          `[inference][${jobId}] Title optimization failed for bookmark "${bookmarkId}": ${error}`,
+        );
+      }
       await runTagging(bookmarkId, job, inferenceClient);
       break;
+    }
     default:
       throw new Error(`Unknown inference type: ${request.data.type}`);
   }
