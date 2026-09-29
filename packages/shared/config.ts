@@ -115,7 +115,7 @@ const allEnv = z.object({
   TITLE_OPTIMIZATION_ENABLED: stringBool("true"),
   TAG_GOVERNANCE_ENABLED: stringBool("true"),
   TAG_AUTO_MERGE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.92),
-  TAG_REVIEW_THRESHOLD: z.coerce.number().min(0).max(1).default(0.7),
+  TAG_REVIEW_THRESHOLD: z.coerce.number().min(0).max(1).default(0.68),
   JEV_BASE_URL: z.string().url().optional(),
   JEV_API_KEY: z.string().optional(),
   JEV_MODEL: z.string().default("jev-1.13"),
