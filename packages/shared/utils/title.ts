@@ -13,7 +13,10 @@ export const CHALLENGE_TITLE_PATTERNS = [
  * Returns true when a crawled title is unlikely to be useful as a human-facing
  * bookmark title. This intentionally avoids rewriting normal article titles.
  */
-export function isLowQualityTitle(title: string | null | undefined, url?: string | null): boolean {
+export function isLowQualityTitle(
+  title: string | null | undefined,
+  url?: string | null,
+): boolean {
   const normalizedTitle = title?.trim() ?? "";
   if (!normalizedTitle) {
     return true;
@@ -23,7 +26,9 @@ export function isLowQualityTitle(title: string | null | undefined, url?: string
     return true;
   }
 
-  if (CHALLENGE_TITLE_PATTERNS.some((pattern) => pattern.test(normalizedTitle))) {
+  if (
+    CHALLENGE_TITLE_PATTERNS.some((pattern) => pattern.test(normalizedTitle))
+  ) {
     return true;
   }
 
@@ -62,6 +67,20 @@ export function isLowQualityTitle(title: string | null | undefined, url?: string
   const separatorCount = (normalizedTitle.match(/[-_]/g) ?? []).length;
   if (!hasSpace && separatorCount >= 2) {
     return true;
+  }
+
+  // Long SEO/toolbox titles usually repeat feature phrases across pipe/dash
+  // segments and are worse than an AI-generated concise title.
+  if (normalizedTitle.length > 80) {
+    const keywordCount = (
+      normalizedTitle.match(
+        /\b(check|test|tool|toolbox|quality|leak|speed|network|address|geolocation)\b/gi,
+      ) ?? []
+    ).length;
+    const segments = normalizedTitle.split(/\s+[|\u2013-]\s+/).length;
+    if (keywordCount >= 3 || segments >= 3) {
+      return true;
+    }
   }
 
   return false;

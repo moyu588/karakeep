@@ -1,13 +1,21 @@
 import { z } from "zod";
 
 import { normalizeTagName } from "../utils/tag";
+import { isUrlLikeTag } from "../utils/tagValidation";
 
 export const MAX_NUM_TAGS_PER_PAGE = 1000;
 
 const zTagNameSchemaWithValidation = z
   .string()
   .transform((s) => normalizeTagName(s).trim())
-  .pipe(z.string().min(1));
+  .pipe(
+    z
+      .string()
+      .min(1)
+      .refine((s) => !isUrlLikeTag(s), {
+        message: "Tags cannot be URLs or domains",
+      }),
+  );
 
 export const zCreateTagRequestSchema = z.object({
   name: zTagNameSchemaWithValidation,

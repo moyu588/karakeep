@@ -62,6 +62,7 @@ import {
 import type { ZBookmarkTags } from "@karakeep/shared/types/tags";
 import { ANCHOR_TEXT_MAX_LENGTH } from "@karakeep/shared/utils/reading-progress-dom";
 import { normalizeTagName } from "@karakeep/shared/utils/tag";
+import { isUrlLikeTag } from "@karakeep/shared/utils/tagValidation";
 import { getVectorStoreClient } from "@karakeep/shared/vectorStore";
 import type { VectorFilterQuery } from "@karakeep/shared/vectorStore";
 import { bookmarkCreationCounter } from "../stats";
@@ -1302,11 +1303,13 @@ export const bookmarksAppRouter = router({
       };
 
       // Normalize tag names and create new tags outside transaction to reduce transaction duration
-      let normalizedAttachTags = input.attach.map((tag) => ({
-        tagId: tag.tagId,
-        tagName: tag.tagName ? normalizeTagName(tag.tagName) : undefined,
-        attachedBy: tag.attachedBy,
-      }));
+      let normalizedAttachTags = input.attach
+        .map((tag) => ({
+          tagId: tag.tagId,
+          tagName: tag.tagName ? normalizeTagName(tag.tagName) : undefined,
+          attachedBy: tag.attachedBy,
+        }))
+        .filter((tag) => !tag.tagName || !isUrlLikeTag(tag.tagName));
       const normalizedDetachTags = await Promise.all(
         input.detach.map(async (tag) => {
           if (!tag.tagName) {

@@ -27,6 +27,17 @@ describe("isLowQualityTitle", () => {
     ).toBe(false);
   });
 
+  it("detects long SEO toolbox titles", () => {
+    expect(
+      isLowQualityTitle(
+        "IPCheck.ing - Check My IP Address and Geolocation - IP Leak Test - DNS Leak Test - IP Quality Check - Test Network Speed - All-in-one IP Toolbox",
+      ),
+    ).toBe(true);
+    expect(isLowQualityTitle("A normal article title about IP detection")).toBe(
+      false,
+    );
+  });
+
   it("detects a title equal to the URL host", () => {
     expect(isLowQualityTitle("example.com", "https://example.com/post")).toBe(
       true,

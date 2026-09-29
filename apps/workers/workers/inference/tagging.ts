@@ -33,6 +33,7 @@ import { DequeuedJob, EnqueueOptions } from "@karakeep/shared/queueing";
 import { RuleEngine } from "@karakeep/trpc/lib/ruleEngine";
 import { Bookmark } from "@karakeep/trpc/models/bookmarks";
 import { resolveTagNames } from "@karakeep/trpc/lib/tagResolver";
+import { filterUrlLikeTags } from "@karakeep/shared/utils/tagValidation";
 import { WebhooksService } from "@karakeep/trpc/models/webhooks.service";
 
 /**
@@ -715,7 +716,14 @@ export async function runTagging(
     return;
   }
 
-  let tagsToConnect = tags;
+  const safeTags = filterUrlLikeTags(tags);
+  if (safeTags.length !== tags.length) {
+    logger.info(
+      `[inference][${jobId}] Removed URL-like tags for bookmark "${bookmark.id}": ${tags.join(", ")} -> ${safeTags.join(", ")}`,
+    );
+  }
+
+  let tagsToConnect = safeTags;
   if (serverConfig.tagGovernance.enabled) {
     try {
       const resolvedTags = await resolveTagNames({
