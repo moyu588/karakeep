@@ -23,6 +23,53 @@ export const TAG_EQUIVALENCE_RULES = `
 - Do not map website scraping/data extraction or multi-platform agent access to Web搜索; only a generic Web-search concept maps to Web搜索.
 `.trim();
 
+/**
+ * JEV structured-output limit: a choice question accepts at most 255 criteria.
+ * Keep one slot for NONE, so the canonical list is capped at 254.
+ */
+export const JEV_MAX_CRITERIA = 254;
+
+/**
+ * Heuristic relevance scoring for pruning large canonical-tag lists before
+ * sending them to JEV. Exact-insensitive match ranks highest, then containment
+ * and shared-word overlap, so the most plausible equivalents survive pruning.
+ */
+export function rankCanonicalTagsForJev(
+  candidateTag: string,
+  canonicalTags: string[],
+  limit = JEV_MAX_CRITERIA,
+): string[] {
+  if (canonicalTags.length <= limit) {
+    return canonicalTags;
+  }
+
+  const cand = candidateTag.toLowerCase().trim();
+  const candWords = cand.split(/[^a-z0-9\u4e00-\u9fff]+/).filter(Boolean);
+
+  const scored = canonicalTags.map((tag) => {
+    const norm = tag.toLowerCase().trim();
+    const words = norm.split(/[^a-z0-9\u4e00-\u9fff]+/).filter(Boolean);
+
+    let score = 0;
+    if (norm === cand) {
+      score = 1000;
+    } else if (norm.includes(cand) || cand.includes(norm)) {
+      score = 500;
+    } else {
+      const shared = words.filter((w) => candWords.includes(w)).length;
+      score = shared > 0 ? Math.min(100, shared * 20) : 0;
+    }
+    // Prefer shorter canonical tags on ties: they are the broader concept.
+    score -= Math.floor(norm.length / 20);
+    return { tag, score };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+  const kept = scored.slice(0, limit).map((s) => s.tag);
+  // Stable, readable order in the JEV payload.
+  return kept.sort((a, b) => a.localeCompare(b));
+}
+
 export class JevClient {
   constructor(
     private readonly config: {

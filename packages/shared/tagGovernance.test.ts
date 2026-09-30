@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { JevClient } from "./tagGovernance";
+import {
+  JEV_MAX_CRITERIA,
+  JevClient,
+  rankCanonicalTagsForJev,
+} from "./tagGovernance";
 
 const client = new JevClient({
   baseUrl: "https://jev.example.test/api",
@@ -108,5 +112,37 @@ describe("JevClient.chooseEquivalentTag", () => {
 
     await expect(client.chooseEquivalentTag("ip风险", [])).resolves.toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("rankCanonicalTagsForJev", () => {
+  it("caps the list at the JEV criteria limit", () => {
+    const tags = Array.from({ length: 600 }, (_, i) => `tag-${i}`);
+    const ranked = rankCanonicalTagsForJev("github", tags);
+    expect(ranked.length).toBeLessThanOrEqual(JEV_MAX_CRITERIA);
+  });
+
+  it("keeps exact and containment matches when pruning large lists", () => {
+    const fillers = Array.from({ length: 300 }, (_, i) => `filler-${i}`);
+    const tags = [
+      "unrelated",
+      "GitHub",
+      "github-actions",
+      "mygithub",
+      "其他",
+      ...fillers,
+    ];
+    const ranked = rankCanonicalTagsForJev("GitHub", tags);
+    expect(ranked.length).toBe(JEV_MAX_CRITERIA);
+    expect(ranked).toContain("github-actions");
+    expect(ranked).toContain("mygithub");
+    expect(ranked).toContain("GitHub");
+    expect(ranked).not.toContain("filler-299");
+  });
+
+  it("does not mutate or reorder when under the limit", () => {
+    const tags = ["zeta", "alpha", "beta"];
+    expect(rankCanonicalTagsForJev("gamma", tags)).toEqual(tags);
+    expect(tags).toEqual(["zeta", "alpha", "beta"]);
   });
 });

@@ -4,6 +4,7 @@ import serverConfig from "@karakeep/shared/config";
 import {
   createJevClientFromConfig,
   normalizeTagNameForAlias,
+  rankCanonicalTagsForJev,
 } from "@karakeep/shared/tagGovernance";
 import type { db as DB } from "@karakeep/db";
 import {
@@ -67,7 +68,8 @@ async function inferEquivalentTag(
 ): Promise<{ tag: string | null; confidence: number } | null> {
   const jev = createJevClientFromConfig();
   if (jev) {
-    const result = await jev.chooseEquivalentTag(candidateTag, canonicalTags);
+    const pruned = rankCanonicalTagsForJev(candidateTag, canonicalTags);
+    const result = await jev.chooseEquivalentTag(candidateTag, pruned);
     if (result?.choice && result.choice !== "NONE") {
       return {
         tag: result.choice,
