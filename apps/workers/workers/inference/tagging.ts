@@ -27,6 +27,7 @@ import {
   triggerSearchReindex,
 } from "@karakeep/shared-server";
 import serverConfig from "@karakeep/shared/config";
+import { EmbeddingClientFactory } from "@karakeep/shared/inference";
 import logger from "@karakeep/shared/logger";
 import { buildImagePrompt } from "@karakeep/shared/prompts";
 import { buildTextPrompt } from "@karakeep/shared/prompts.server";
@@ -748,7 +749,11 @@ export async function runTagging(
         .orderBy(desc(count(tagsOnBookmarks.tagId)))
         .limit(serverConfig.tagAbsorption.maxCandidates);
       if (existing.length > 0) {
-        const embed = await inferenceClient.generateEmbeddingFromText([
+        const embeddingClient = EmbeddingClientFactory.build();
+        if (!embeddingClient) {
+          throw new Error("No embedding client configured");
+        }
+        const embed = await embeddingClient.generateEmbeddingFromText([
           ...safeTags,
           ...existing.map((t) => t.name),
         ]);
