@@ -72,7 +72,10 @@ export class JevClient {
     });
 
     if (!response.ok) {
-      throw new Error(`jev request failed: ${response.status}`);
+      const errorBody = await response.text().catch(() => "");
+      throw new Error(
+        `jev request failed: ${response.status} body=${errorBody.slice(0, 500)}`,
+      );
     }
 
     const data = (await response.json()) as {
