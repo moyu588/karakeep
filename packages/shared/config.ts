@@ -114,6 +114,9 @@ const allEnv = z.object({
   INFERENCE_ENABLE_AUTO_SUMMARIZATION: stringBool("false"),
   TITLE_OPTIMIZATION_ENABLED: stringBool("true"),
   TAG_GOVERNANCE_ENABLED: stringBool("true"),
+  TAG_ABSORPTION_ENABLED: stringBool("true"),
+  TAG_ABSORPTION_THRESHOLD: z.coerce.number().min(0).max(1).default(0.85),
+  TAG_ABSORPTION_MAX_CANDIDATES: z.coerce.number().int().min(1).default(300),
   TAG_AUTO_MERGE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.92),
   TAG_REVIEW_THRESHOLD: z.coerce.number().min(0).max(1).default(0.68),
   JEV_BASE_URL: z.string().url().optional(),
@@ -382,6 +385,11 @@ const serverConfigSchema = allEnv.transform((val, ctx) => {
     },
     titleOptimization: {
       enabled: val.TITLE_OPTIMIZATION_ENABLED,
+    },
+    tagAbsorption: {
+      enabled: val.TAG_ABSORPTION_ENABLED,
+      threshold: val.TAG_ABSORPTION_THRESHOLD,
+      maxCandidates: val.TAG_ABSORPTION_MAX_CANDIDATES,
     },
     tagGovernance: {
       enabled: val.TAG_GOVERNANCE_ENABLED,

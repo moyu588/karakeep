@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, count, desc, eq, inArray } from "drizzle-orm";
 import { getBookmarkDomain } from "network";
 import { buildImpersonatingTRPCClient } from "trpc";
 import { z } from "zod";
@@ -16,6 +16,7 @@ import {
   bookmarkTags,
   customPrompts,
   tagsOnBookmarks,
+  tagAliases,
   users,
 } from "@karakeep/db/schema";
 import {
@@ -34,6 +35,8 @@ import { RuleEngine } from "@karakeep/trpc/lib/ruleEngine";
 import { Bookmark } from "@karakeep/trpc/models/bookmarks";
 import { resolveTagNames } from "@karakeep/trpc/lib/tagResolver";
 import { filterUrlLikeTags } from "@karakeep/shared/utils/tagValidation";
+import { matchTagsForAbsorption } from "@karakeep/shared/tagAbsorption";
+import { normalizeTagNameForAlias } from "@karakeep/shared/tagGovernance";
 import { WebhooksService } from "@karakeep/trpc/models/webhooks.service";
 
 /**
@@ -723,13 +726,85 @@ export async function runTagging(
     );
   }
 
-  let tagsToConnect = safeTags;
+  // Tag absorption: fold near-duplicate suggestions into existing user tags
+  // via embedding similarity before governance, so junky variants never
+  // become brand-new rows and JEV gets fewer choices to worry about.
+  let absorptionInput = safeTags;
+  if (serverConfig.tagAbsorption.enabled && safeTags.length > 0) {
+    try {
+      const existing = await db
+        .select({
+          id: bookmarkTags.id,
+          name: bookmarkTags.name,
+          usage: count(tagsOnBookmarks.tagId),
+        })
+        .from(bookmarkTags)
+        .leftJoin(
+          tagsOnBookmarks,
+          eq(tagsOnBookmarks.tagId, bookmarkTags.id),
+        )
+        .where(eq(bookmarkTags.userId, bookmark.userId))
+        .groupBy(bookmarkTags.id, bookmarkTags.name)
+        .orderBy(desc(count(tagsOnBookmarks.tagId)))
+        .limit(serverConfig.tagAbsorption.maxCandidates);
+      if (existing.length > 0) {
+        const embed = await inferenceClient.generateEmbeddingFromText([
+          ...safeTags,
+          ...existing.map((t) => t.name),
+        ]);
+        const { absorbed, fresh } = matchTagsForAbsorption(
+          safeTags.map((name, i) => ({
+            name,
+            embedding: embed.embeddings[i],
+          })),
+          existing.map((t, i) => ({
+            name: t.name,
+            embedding: embed.embeddings[safeTags.length + i],
+          })),
+          serverConfig.tagAbsorption.threshold,
+        );
+        if (absorbed.length > 0) {
+          logger.info(
+            `[inference][${jobId}] Tag absorption folded tags for bookmark "${bookmark.id}": ${absorbed.map((m) => `${m.input} -> ${m.matched} (${m.similarity})`).join("; ")}`,
+          );
+          const idByName = new Map(existing.map((t) => [t.name, t.id]));
+          await db
+            .insert(tagAliases)
+            .values(
+              absorbed
+                .map((m) => {
+                  const targetTagId = idByName.get(m.matched);
+                  return targetTagId
+                    ? {
+                        userId: bookmark.userId,
+                        targetTagId,
+                        aliasName: m.input,
+                        aliasNormalizedName: normalizeTagNameForAlias(m.input),
+                        source: "ai" as const,
+                      }
+                    : null;
+                })
+                .filter((v) => v !== null),
+            )
+            .onConflictDoNothing();
+        }
+        absorptionInput = [...absorbed.map((m) => m.matched), ...fresh];
+      }
+    } catch (error) {
+      // Absorption is best-effort: fall back to the unabsorbed tags.
+      logger.warn(
+        `[inference][${jobId}] Tag absorption failed for bookmark "${bookmark.id}": ${error}`,
+      );
+    }
+  }
+
+  let tagsToConnect = absorptionInput;
   if (serverConfig.tagGovernance.enabled) {
     try {
       const resolvedTags = await resolveTagNames({
         db,
         userId: bookmark.userId,
-        tags,
+        tags: absorptionInput,
         semanticResolution: true,
         inferenceClient,
       });

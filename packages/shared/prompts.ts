@@ -28,7 +28,9 @@ export function buildImagePrompt(
   return `
 You are an expert whose responsibility is to help with automatic tagging for a read-it-later/bookmarking app.
 Analyze the attached image and suggest relevant tags that describe its key themes, topics, and main ideas. The rules are:
-- Prefer concrete, durable tags: named products, technologies, projects, standards, subject areas, and important concepts.
+- Prefer broad, reusable topic tags over one-off facts, examples, source organizations, page sections, or implementation details.
+- Do NOT create tags for specific project names, product codenames, person names, company names, or website names (e.g. repo names, app names, brand names). Express them as a broader technology or topic category instead (e.g. a repo page -> "open source" or its language, not the repo name).
+- Reuse existing tags verbatim when one of the provided existing tags already fits; do not invent a new variant of an existing tag.
 - Include only retrieval-worthy tags that describe the saved item's intended content, not incidental UI or page chrome.
 - The tags must be in ${lang}.
 - Keep each tag short: ideally 1-3 words. Do not include parenthetical explanations, comma-separated examples, or long descriptive phrases inside a tag.
@@ -38,7 +40,7 @@ Analyze the attached image and suggest relevant tags that describe its key theme
     - A Cloudflare/security check, CAPTCHA, bot check, anti-DDoS challenge, browser verification, or access-blocked page
     - Boilerplate content such as cookie consent, login walls, GDPR notices, navigation menus, or a blank/empty image
   In these cases, return an empty tags array. Do not tag the failure/interstitial page itself.
-- Aim for 10-15 tags.
+- Aim for 3-5 tags. Tag count discipline: prefer fewer, broader tags. Exceeding 5 tags is a mistake.
 - If there are no good tags, leave the array empty.
 ${curatedInstruction}
 ${potentialRelevantTagsInstruction}
@@ -67,7 +69,9 @@ export function constructTextTaggingPrompt(
   return `
 You are an expert whose responsibility is to help with automatic tagging for a read-it-later/bookmarking app.
 Analyze the TEXT_CONTENT below and suggest relevant tags that describe its key themes, topics, and main ideas. The rules are:
-- Prefer concrete, durable tags: named products, technologies, projects, standards, subject areas, and important concepts.
+- Prefer broad, reusable topic tags over one-off facts, examples, source organizations, page sections, or implementation details.
+- Do NOT create tags for specific project names, product codenames, person names, company names, or website names (e.g. repo names, app names, brand names). Express them as a broader technology or topic category instead (e.g. a repo page -> "open source" or its language, not the repo name).
+- Reuse existing tags verbatim when one of the provided existing tags already fits; do not invent a new variant of an existing tag.
 - Include only retrieval-worthy tags that describe the saved item's intended content, not incidental page chrome.
 - The tags must be in ${lang}.
 - Keep each tag short: ideally 1-3 words. Do not include parenthetical explanations, comma-separated examples, or long descriptive phrases inside a tag.
@@ -77,7 +81,7 @@ Analyze the TEXT_CONTENT below and suggest relevant tags that describe its key t
     - A Cloudflare/security check, CAPTCHA, bot check, anti-DDoS challenge, browser verification, or access-blocked page
     - Boilerplate content such as cookie consent, login walls, GDPR notices, navigation menus, or empty pages
   If useful metadata or other legitimate content remains, generate tags using only that information. Otherwise, return an empty tags array. Never tag the failure, interstitial, or boilerplate content itself.
-- Aim for 3-5 tags.
+- Aim for 3-5 tags. Tag count discipline: prefer fewer, broader tags. Exceeding 5 tags is a mistake.
 - If there are no good tags, leave the array empty.
 ${curatedInstruction}
 ${potentialRelevantTagsInstruction}
