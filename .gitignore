@@ -76,3 +76,6 @@ jean.json
 
 # Local isolated feature-test environment (contains generated secrets)
 .test/
+
+# Transient tag inventory exports from governance tooling
+/tag-inventory-*.json
