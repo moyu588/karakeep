@@ -1,8 +1,9 @@
 import type { ZTagStyle } from "./types/users";
 import {
+  getCanonicalTagsPrompt,
   getCuratedTagsPrompt,
+  getTagOutputContractPrompt,
   getTagStylePrompt,
-  getPotentialRelevantTagsPrompt,
 } from "./utils/tag";
 
 /**
@@ -21,7 +22,7 @@ export function buildImagePrompt(
 ) {
   const tagStyleInstruction = getTagStylePrompt(tagStyle);
   const curatedInstruction = getCuratedTagsPrompt(curatedTags);
-  const potentialRelevantTagsInstruction = getPotentialRelevantTagsPrompt(
+  const canonicalTagsInstruction = getCanonicalTagsPrompt(
     potentialRelevantTags,
   );
 
@@ -43,10 +44,10 @@ Analyze the attached image and suggest relevant tags that describe its key theme
 - Aim for 3-5 tags. Tag count discipline: prefer fewer, broader tags. Exceeding 5 tags is a mistake.
 - If there are no good tags, leave the array empty.
 ${curatedInstruction}
-${potentialRelevantTagsInstruction}
+${canonicalTagsInstruction}
 ${tagStyleInstruction}
 ${customPrompts && customPrompts.map((p) => `- ${p}`).join("\n")}
-You must respond in valid JSON with the key "tags" and the value is list of tags. Don't wrap the response in a markdown code.`;
+${getTagOutputContractPrompt(!!potentialRelevantTags?.length)}`;
 }
 
 /**
@@ -62,7 +63,7 @@ export function constructTextTaggingPrompt(
 ): string {
   const tagStyleInstruction = getTagStylePrompt(tagStyle);
   const curatedInstruction = getCuratedTagsPrompt(curatedTags);
-  const potentialRelevantTagsInstruction = getPotentialRelevantTagsPrompt(
+  const canonicalTagsInstruction = getCanonicalTagsPrompt(
     potentialRelevantTags,
   );
 
@@ -84,14 +85,14 @@ Analyze the TEXT_CONTENT below and suggest relevant tags that describe its key t
 - Aim for 3-5 tags. Tag count discipline: prefer fewer, broader tags. Exceeding 5 tags is a mistake.
 - If there are no good tags, leave the array empty.
 ${curatedInstruction}
-${potentialRelevantTagsInstruction}
+${canonicalTagsInstruction}
 ${tagStyleInstruction}
 ${customPrompts && customPrompts.map((p) => `- ${p}`).join("\n")}
 
 <TEXT_CONTENT>
 ${content}
 </TEXT_CONTENT>
-You must respond in JSON with the key "tags" and the value is an array of string tags.`;
+${getTagOutputContractPrompt(!!potentialRelevantTags?.length)}`;
 }
 
 /**

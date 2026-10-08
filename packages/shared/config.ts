@@ -117,6 +117,17 @@ const allEnv = z.object({
   TAG_ABSORPTION_ENABLED: stringBool("true"),
   TAG_ABSORPTION_THRESHOLD: z.coerce.number().min(0).max(1).default(0.85),
   TAG_ABSORPTION_MAX_CANDIDATES: z.coerce.number().int().min(1).default(300),
+  TAG_VOCABULARY_ENABLED: stringBool("true"),
+  TAG_VOCABULARY_MAX_TAGS: z.coerce.number().int().min(1).default(200),
+  TAG_VOCABULARY_MAX_CHARS: z.coerce.number().int().min(1).default(1400),
+  TAG_VOCABULARY_MIN_USAGE: z.coerce.number().int().min(1).default(2),
+  TAG_NEW_TAG_POLICY: z.enum(["allow", "cap", "fold_only"]).default("cap"),
+  TAG_NEW_TAG_MAX_PER_BOOKMARK: z.coerce.number().int().min(0).default(2),
+  TAG_NEW_TAG_ABSORPTION_THRESHOLD: z.coerce
+    .number()
+    .min(0)
+    .max(1)
+    .default(0.82),
   TAG_AUTO_MERGE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.92),
   TAG_REVIEW_THRESHOLD: z.coerce.number().min(0).max(1).default(0.68),
   JEV_BASE_URL: z.string().url().optional(),
@@ -390,6 +401,15 @@ const serverConfigSchema = allEnv.transform((val, ctx) => {
       enabled: val.TAG_ABSORPTION_ENABLED,
       threshold: val.TAG_ABSORPTION_THRESHOLD,
       maxCandidates: val.TAG_ABSORPTION_MAX_CANDIDATES,
+    },
+    tagVocabulary: {
+      enabled: val.TAG_VOCABULARY_ENABLED,
+      maxTags: val.TAG_VOCABULARY_MAX_TAGS,
+      maxChars: val.TAG_VOCABULARY_MAX_CHARS,
+      minUsage: val.TAG_VOCABULARY_MIN_USAGE,
+      newTagPolicy: val.TAG_NEW_TAG_POLICY,
+      maxNewTagsPerBookmark: val.TAG_NEW_TAG_MAX_PER_BOOKMARK,
+      newTagAbsorptionThreshold: val.TAG_NEW_TAG_ABSORPTION_THRESHOLD,
     },
     tagGovernance: {
       enabled: val.TAG_GOVERNANCE_ENABLED,

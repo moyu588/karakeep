@@ -35,8 +35,13 @@ import { DequeuedJob, EnqueueOptions } from "@karakeep/shared/queueing";
 import { RuleEngine } from "@karakeep/trpc/lib/ruleEngine";
 import { Bookmark } from "@karakeep/trpc/models/bookmarks";
 import { resolveTagNames } from "@karakeep/trpc/lib/tagResolver";
-import { filterUrlLikeTags } from "@karakeep/shared/utils/tagValidation";
+import {
+  filterUrlLikeTags,
+  isUrlLikeTag,
+} from "@karakeep/shared/utils/tagValidation";
 import { matchTagsForAbsorption } from "@karakeep/shared/tagAbsorption";
+import { buildCanonicalVocabulary } from "@karakeep/shared/tagVocabulary";
+import { partitionTagSuggestions } from "@karakeep/shared/tagOutput";
 import { normalizeTagNameForAlias } from "@karakeep/shared/tagGovernance";
 import { WebhooksService } from "@karakeep/trpc/models/webhooks.service";
 
@@ -47,7 +52,13 @@ const RELEVANT_TAG_TRUNCATE_LENGTH = 1000;
 
 const openAIResponseSchema = z.object({
   tags: z.array(z.string()),
+  new_tags: z.array(z.string()).optional(),
 });
+
+interface InferredTags {
+  tags: string[];
+  newTags: string[];
+}
 
 function parseJsonFromLLMResponse(response: string): unknown {
   const trimmedResponse = response.trim();
@@ -319,7 +330,7 @@ async function inferTags(
   inferredTagLang: string,
   curatedTags?: string[],
   potentialRelevantTags?: string[],
-) {
+): Promise<InferredTags | null> {
   setSpanAttributes({
     "user.id": bookmark.userId,
     "bookmark.id": bookmark.id,
@@ -387,28 +398,36 @@ async function inferTags(
   }
 
   try {
-    let tags = openAIResponseSchema.parse(
+    const parsed = openAIResponseSchema.parse(
       parseJsonFromLLMResponse(response.response),
-    ).tags;
-    logger.info(
-      `[inference][${jobId}] Inferring tag for bookmark "${bookmark.id}" used ${response.totalTokens} tokens and inferred: ${tags}`,
     );
 
     // Sometimes the tags contain the hashtag symbol, let's strip them out if they do.
     // Additionally, trim the tags to prevent whitespaces at the beginning/the end of the tag.
-    tags = tags.map((t) => {
-      let tag = t;
-      if (tag.startsWith("#")) {
-        tag = t.slice(1);
-      }
-      return tag.trim();
-    });
+    const cleanTags = (names: string[]) =>
+      names
+        .map((t) => {
+          let tag = t;
+          if (tag.startsWith("#")) {
+            tag = t.slice(1);
+          }
+          return tag.trim();
+        })
+        .filter((t) => t.length > 0);
+
+    const tags = cleanTags(parsed.tags);
+    const newTags = cleanTags(parsed.new_tags ?? []);
+    logger.info(
+      `[inference][${jobId}] Inferring tag for bookmark "${bookmark.id}" used ${response.totalTokens} tokens and inferred: tags=${tags} new_tags=${newTags}`,
+    );
+
     addLogFields<"inferenceWorker.run">({
       "inference.tagging.num_generated_tags": tags.length,
+      "inference.tagging.num_new_tags": newTags.length,
       "inference.total_tokens": response.totalTokens,
     });
 
-    return tags;
+    return { tags, newTags };
   } catch (e) {
     const responseSneak = response.response.substring(0, 20);
     throw new Error(
@@ -632,6 +651,50 @@ async function getPotentiallyRelevantTags(
   return [...toKeep];
 }
 
+/**
+ * Builds the canonical vocabulary for a bookmark: the user's globally
+ * high-usage tags (so the model can reuse concepts it has not seen locally)
+ * merged with the tags of similar bookmarks, trimmed to a tag and character
+ * budget so the prompt leaves room for the actual content.
+ */
+async function buildVocabulary(
+  jobId: string,
+  bookmarkId: string,
+  userId: string,
+  embedding?: number[],
+): Promise<string[] | undefined> {
+  const config = serverConfig.tagVocabulary;
+
+  const globalTags = await db
+    .select({
+      name: bookmarkTags.name,
+      usage: count(tagsOnBookmarks.tagId),
+    })
+    .from(bookmarkTags)
+    .leftJoin(tagsOnBookmarks, eq(tagsOnBookmarks.tagId, bookmarkTags.id))
+    .where(eq(bookmarkTags.userId, userId))
+    .groupBy(bookmarkTags.id, bookmarkTags.name)
+    .orderBy(desc(count(tagsOnBookmarks.tagId)))
+    .limit(config.maxTags);
+
+  const neighborTags =
+    (await getPotentiallyRelevantTags(jobId, bookmarkId, userId, embedding)) ??
+    [];
+
+  const vocabulary = buildCanonicalVocabulary(globalTags, neighborTags, {
+    maxTags: config.maxTags,
+    maxChars: config.maxChars,
+    minUsage: config.minUsage,
+    isExcluded: isUrlLikeTag,
+  });
+
+  logger.debug(
+    `[inference][${jobId}] Canonical vocabulary for bookmark ${bookmarkId}: ${vocabulary.length} tags (global=${globalTags.length}, neighbors=${neighborTags.length})`,
+  );
+
+  return vocabulary.length > 0 ? vocabulary : undefined;
+}
+
 export async function runTagging(
   bookmarkId: string,
   job: DequeuedJob<ZOpenAIRequest>,
@@ -669,9 +732,11 @@ export async function runTagging(
     return;
   }
 
-  // Resolve curated tag names if configured
+  // Build the canonical vocabulary the model must reuse verbatim. With curated
+  // tags configured the whitelist itself becomes the vocabulary; otherwise it
+  // is the user's globally high-usage tags merged with similar bookmarks'.
   let curatedTagNames: string[] | undefined;
-  let potentialRelevantTags: string[] | undefined = undefined;
+  let canonicalVocabulary: string[] | undefined;
   if (userSettings?.curatedTagIds && userSettings.curatedTagIds.length > 0) {
     const tags = await db.query.bookmarkTags.findMany({
       where: and(
@@ -681,19 +746,18 @@ export async function runTagging(
       columns: { name: true },
     });
     curatedTagNames = tags.map((t) => t.name);
-  } else {
-    // If no curated tags are configured, try to find some potentially relevant tags
+    canonicalVocabulary = curatedTagNames;
+  } else if (serverConfig.tagVocabulary.enabled) {
     try {
-      potentialRelevantTags =
-        (await getPotentiallyRelevantTags(
-          jobId,
-          bookmarkId,
-          bookmark.userId,
-          job.data.embedding,
-        )) ?? undefined;
+      canonicalVocabulary = await buildVocabulary(
+        jobId,
+        bookmarkId,
+        bookmark.userId,
+        job.data.embedding,
+      );
     } catch (e) {
       logger.error(
-        `[inference][${jobId}] Failed to find potentially relevant tags: ${e}`,
+        `[inference][${jobId}] Failed to build the canonical vocabulary: ${e}`,
       );
     }
   }
@@ -702,7 +766,7 @@ export async function runTagging(
     `[inference][${jobId}] Starting an inference job for bookmark with id "${bookmark.id}"`,
   );
 
-  const tags = await inferTags(
+  const inferred = await inferTags(
     jobId,
     bookmark,
     inferenceClient,
@@ -710,28 +774,67 @@ export async function runTagging(
     userSettings?.tagStyle ?? "as-generated",
     userSettings?.inferredTagLang ?? serverConfig.inference.inferredTagLang,
     curatedTagNames,
-    potentialRelevantTags,
+    canonicalVocabulary,
   );
 
-  if (tags === null) {
+  if (inferred === null) {
     logger.info(
       `[inference][${jobId}] Skipping tagging for bookmark "${bookmark.id}" due to missing content.`,
     );
     return;
   }
 
-  const safeTags = filterUrlLikeTags(tags);
-  if (safeTags.length !== tags.length) {
+  // Split the reuse channel from the new-tag channel. Reuse entries that are
+  // not in the vocabulary are demoted, so a model that ignores the prompt
+  // still cannot mint near-duplicate tags.
+  const hasVocabulary =
+    canonicalVocabulary !== undefined && canonicalVocabulary.length > 0;
+  const { canonicalTags, newTags, droppedTags, demotedTags } = hasVocabulary
+    ? partitionTagSuggestions(
+        { tags: inferred.tags, new_tags: inferred.newTags },
+        canonicalVocabulary!,
+        {
+          policy: serverConfig.tagVocabulary.newTagPolicy,
+          maxNewTags: serverConfig.tagVocabulary.maxNewTagsPerBookmark,
+        },
+      )
+    : {
+        canonicalTags: inferred.tags,
+        newTags: inferred.newTags,
+        droppedTags: [],
+        demotedTags: [],
+      };
+
+  addLogFields<"inferenceWorker.run">({
+    "inference.tagging.vocabulary_size": canonicalVocabulary?.length ?? 0,
+    "inference.tagging.num_reused_tags": canonicalTags.length,
+    "inference.tagging.num_new_tags_kept": newTags.length,
+    "inference.tagging.num_new_tags_dropped": droppedTags.length,
+  });
+  if (demotedTags.length > 0 || droppedTags.length > 0) {
     logger.info(
-      `[inference][${jobId}] Removed URL-like tags for bookmark "${bookmark.id}": ${tags.join(", ")} -> ${safeTags.join(", ")}`,
+      `[inference][${jobId}] Tag policy for bookmark "${bookmark.id}": demoted=[${demotedTags.join(", ")}] dropped=[${droppedTags.join(", ")}]`,
+    );
+  }
+
+  const safeReusedTags = filterUrlLikeTags(canonicalTags);
+  const safeNewTags = filterUrlLikeTags(newTags);
+  if (
+    safeReusedTags.length !== canonicalTags.length ||
+    safeNewTags.length !== newTags.length
+  ) {
+    logger.info(
+      `[inference][${jobId}] Removed URL-like tags for bookmark "${bookmark.id}".`,
     );
   }
 
   // Tag absorption: fold near-duplicate suggestions into existing user tags
   // via embedding similarity before governance, so junky variants never
-  // become brand-new rows and JEV gets fewer choices to worry about.
-  let absorptionInput = safeTags;
-  if (serverConfig.tagAbsorption.enabled && safeTags.length > 0) {
+  // become brand-new rows and JEV gets fewer choices to worry about. Reused
+  // tags already exist verbatim, so only new tags need folding, and they use a
+  // more permissive threshold because the alternative is creating a new row.
+  let absorptionInput = [...safeReusedTags, ...safeNewTags];
+  if (serverConfig.tagAbsorption.enabled && safeNewTags.length > 0) {
     try {
       const existing = await db
         .select({
@@ -740,10 +843,7 @@ export async function runTagging(
           usage: count(tagsOnBookmarks.tagId),
         })
         .from(bookmarkTags)
-        .leftJoin(
-          tagsOnBookmarks,
-          eq(tagsOnBookmarks.tagId, bookmarkTags.id),
-        )
+        .leftJoin(tagsOnBookmarks, eq(tagsOnBookmarks.tagId, bookmarkTags.id))
         .where(eq(bookmarkTags.userId, bookmark.userId))
         .groupBy(bookmarkTags.id, bookmarkTags.name)
         .orderBy(desc(count(tagsOnBookmarks.tagId)))
@@ -754,19 +854,19 @@ export async function runTagging(
           throw new Error("No embedding client configured");
         }
         const embed = await embeddingClient.generateEmbeddingFromText([
-          ...safeTags,
+          ...safeNewTags,
           ...existing.map((t) => t.name),
         ]);
         const { absorbed, fresh } = matchTagsForAbsorption(
-          safeTags.map((name, i) => ({
+          safeNewTags.map((name, i) => ({
             name,
             embedding: embed.embeddings[i],
           })),
           existing.map((t, i) => ({
             name: t.name,
-            embedding: embed.embeddings[safeTags.length + i],
+            embedding: embed.embeddings[safeNewTags.length + i],
           })),
-          serverConfig.tagAbsorption.threshold,
+          serverConfig.tagVocabulary.newTagAbsorptionThreshold,
         );
         if (absorbed.length > 0) {
           logger.info(
@@ -793,7 +893,11 @@ export async function runTagging(
             )
             .onConflictDoNothing();
         }
-        absorptionInput = [...absorbed.map((m) => m.matched), ...fresh];
+        absorptionInput = [
+          ...safeReusedTags,
+          ...absorbed.map((m) => m.matched),
+          ...fresh,
+        ];
       }
     } catch (error) {
       // Absorption is best-effort: fall back to the unabsorbed tags.
@@ -814,12 +918,12 @@ export async function runTagging(
         inferenceClient,
       });
       tagsToConnect = [...new Set(resolvedTags.map((tag) => tag.resolved))];
-      const remapped = tagsToConnect.filter((tag) =>
-        tags.includes(tag) ? false : true,
+      const remapped = tagsToConnect.filter(
+        (tag) => !absorptionInput.includes(tag),
       );
       if (remapped.length > 0) {
         logger.info(
-          `[inference][${jobId}] Tag governance remapped tags for bookmark "${bookmark.id}": ${tags.join(", ")} -> ${tagsToConnect.join(", ")}`,
+          `[inference][${jobId}] Tag governance remapped tags for bookmark "${bookmark.id}": ${absorptionInput.join(", ")} -> ${tagsToConnect.join(", ")}`,
         );
       }
     } catch (error) {

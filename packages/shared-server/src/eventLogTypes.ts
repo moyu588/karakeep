@@ -35,6 +35,11 @@ type EventLogInternal =
       "inference.tagging.lang"?: string;
       "inference.tagging.num_generated_tags"?: number;
       "inference.tagging.num_potential_relevant_tags"?: number;
+      "inference.tagging.num_new_tags"?: number;
+      "inference.tagging.vocabulary_size"?: number;
+      "inference.tagging.num_reused_tags"?: number;
+      "inference.tagging.num_new_tags_kept"?: number;
+      "inference.tagging.num_new_tags_dropped"?: number;
     }
   | {
       ["event.name"]: "bookmark.summarize";
