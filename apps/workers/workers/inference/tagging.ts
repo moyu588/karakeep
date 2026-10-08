@@ -1,7 +1,6 @@
 import { and, count, desc, eq, inArray } from "drizzle-orm";
 import { getBookmarkDomain } from "network";
 import { buildImpersonatingTRPCClient } from "trpc";
-import { z } from "zod";
 import { getVectorStoreClient } from "@karakeep/shared/vectorStore";
 
 import type { ZOpenAIRequest } from "@karakeep/shared-server";
@@ -42,6 +41,7 @@ import {
 import { matchTagsForAbsorption } from "@karakeep/shared/tagAbsorption";
 import { buildCanonicalVocabulary } from "@karakeep/shared/tagVocabulary";
 import { partitionTagSuggestions } from "@karakeep/shared/tagOutput";
+import { taggingResponseSchema } from "@karakeep/shared/taggingSchema";
 import { normalizeTagNameForAlias } from "@karakeep/shared/tagGovernance";
 import { WebhooksService } from "@karakeep/trpc/models/webhooks.service";
 
@@ -49,11 +49,6 @@ import { WebhooksService } from "@karakeep/trpc/models/webhooks.service";
  * The maximum length of the relevant tag names to avoid bloating the inference context.
  */
 const RELEVANT_TAG_TRUNCATE_LENGTH = 1000;
-
-const openAIResponseSchema = z.object({
-  tags: z.array(z.string()),
-  new_tags: z.array(z.string()).optional(),
-});
 
 interface InferredTags {
   tags: string[];
@@ -198,7 +193,7 @@ async function inferTagsFromImage(
     ),
     metadata.contentType,
     base64,
-    { schema: openAIResponseSchema, abortSignal },
+    { schema: taggingResponseSchema, abortSignal },
   );
 }
 
@@ -287,7 +282,7 @@ async function inferTagsFromPDF(
     "inference.prompt.size": Buffer.byteLength(prompt, "utf8"),
   });
   return inferenceClient.inferFromText(prompt, {
-    schema: openAIResponseSchema,
+    schema: taggingResponseSchema,
     abortSignal,
   });
 }
@@ -316,7 +311,7 @@ async function inferTagsFromText(
     "inference.prompt.size": Buffer.byteLength(prompt, "utf8"),
   });
   return await inferenceClient.inferFromText(prompt, {
-    schema: openAIResponseSchema,
+    schema: taggingResponseSchema,
     abortSignal,
   });
 }
@@ -398,7 +393,7 @@ async function inferTags(
   }
 
   try {
-    const parsed = openAIResponseSchema.parse(
+    const parsed = taggingResponseSchema.parse(
       parseJsonFromLLMResponse(response.response),
     );
 

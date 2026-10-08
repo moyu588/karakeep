@@ -22,9 +22,10 @@ describe("getTagOutputContractPrompt", () => {
     expect(contract).toContain('"new_tags"');
   });
 
-  it("falls back to the single-channel shape without a vocabulary", () => {
+  it("still requires both keys without a vocabulary (strict schema)", () => {
     const contract = getTagOutputContractPrompt(false);
-    expect(contract).not.toContain("new_tags");
     expect(contract).toContain('"tags"');
+    expect(contract).toContain('"new_tags"');
+    expect(contract).toContain("Always include both keys");
   });
 });

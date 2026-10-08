@@ -61,7 +61,10 @@ export function getTagOutputContractPrompt(hasCanonicalTags: boolean): string {
     return `You must respond in valid JSON with exactly two keys:
 - "tags": an array of strings. Every entry MUST be copied verbatim from CANONICAL_TAGS. Do not invent, translate, re-case or re-punctuate entries. Use an empty array if nothing fits.
 - "new_tags": an array of strings, at most 2, only for concepts genuinely not covered by CANONICAL_TAGS. Prefer an empty array; a new tag is a last resort.
-Do not wrap the response in markdown.`;
+Always include both keys. Do not wrap the response in markdown.`;
   }
-  return `You must respond in valid JSON with the key "tags" and the value is an array of string tags. Don't wrap the response in a markdown code.`;
+  return `You must respond in valid JSON with exactly two keys:
+- "tags": an array of string tags.
+- "new_tags": leave this as an empty array.
+Always include both keys. Do not wrap the response in markdown.`;
 }
