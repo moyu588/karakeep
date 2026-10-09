@@ -109,3 +109,57 @@ export function partitionTagSuggestions(
 
   return { canonicalTags, newTags, droppedTags, demotedTags };
 }
+
+/**
+ * Degraded-path gate used when no canonical vocabulary is available (the
+ * vocabulary build failed, or the user has no reusable tags yet).
+ *
+ * The reuse channel cannot be validated without a vocabulary, so it passes
+ * through untouched. The new-tag channel still honours the configured policy,
+ * so a vocabulary outage cannot silently let long-tail tags back in.
+ * "fold_only" degrades to the cap here: with nothing to reuse, dropping every
+ * suggestion would leave the bookmark untagged.
+ */
+export function capNewTagsWithoutVocabulary(
+  output: TaggingModelOutput,
+  options: PartitionOptions,
+): PartitionResult {
+  const canonicalTags: string[] = [];
+  const seenCanonical = new Set<string>();
+  for (const raw of output.tags ?? []) {
+    const name = raw.trim();
+    const key = normalizeVocabularyName(name);
+    if (!key || seenCanonical.has(key)) {
+      continue;
+    }
+    seenCanonical.add(key);
+    canonicalTags.push(name);
+  }
+
+  const proposed: string[] = [];
+  const seenProposed = new Set<string>();
+  for (const raw of output.new_tags ?? []) {
+    const name = raw.trim();
+    const key = normalizeVocabularyName(name);
+    if (!key || seenCanonical.has(key) || seenProposed.has(key)) {
+      continue;
+    }
+    seenProposed.add(key);
+    proposed.push(name);
+  }
+
+  // "allow" is an explicit opt-out and "fold_only" cannot be honoured without
+  // a vocabulary, so both fall back to the same cap.
+  const maxNewTags =
+    options.policy === "allow"
+      ? proposed.length
+      : Math.max(0, options.maxNewTags);
+  const newTags = proposed.slice(0, maxNewTags);
+
+  return {
+    canonicalTags,
+    newTags,
+    droppedTags: proposed.slice(newTags.length),
+    demotedTags: [],
+  };
+}

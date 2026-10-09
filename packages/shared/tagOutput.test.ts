@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { partitionTagSuggestions } from "./tagOutput";
+import {
+  capNewTagsWithoutVocabulary,
+  partitionTagSuggestions,
+} from "./tagOutput";
 
 const vocabulary = ["渗透测试", "安全工具", "agent"];
 
@@ -85,5 +88,45 @@ describe("partitionTagSuggestions", () => {
     );
     expect(result.canonicalTags).toEqual(["agent"]);
     expect(result.newTags).toEqual([]);
+  });
+});
+
+describe("capNewTagsWithoutVocabulary", () => {
+  it("passes the reuse channel through and caps the new tags", () => {
+    const result = capNewTagsWithoutVocabulary(
+      { tags: ["渗透测试", "安全工具"], new_tags: ["A", "B", "C"] },
+      { policy: "cap", maxNewTags: 2 },
+    );
+    expect(result.canonicalTags).toEqual(["渗透测试", "安全工具"]);
+    expect(result.newTags).toEqual(["A", "B"]);
+    expect(result.droppedTags).toEqual(["C"]);
+    expect(result.demotedTags).toEqual([]);
+  });
+
+  it("keeps every new tag when the policy is allow", () => {
+    const result = capNewTagsWithoutVocabulary(
+      { tags: [], new_tags: ["A", "B", "C"] },
+      { policy: "allow", maxNewTags: 2 },
+    );
+    expect(result.newTags).toEqual(["A", "B", "C"]);
+    expect(result.droppedTags).toEqual([]);
+  });
+
+  it("degrades fold_only to the cap instead of dropping everything", () => {
+    const result = capNewTagsWithoutVocabulary(
+      { tags: [], new_tags: ["A", "B", "C"] },
+      { policy: "fold_only", maxNewTags: 1 },
+    );
+    expect(result.newTags).toEqual(["A"]);
+    expect(result.droppedTags).toEqual(["B", "C"]);
+  });
+
+  it("de-duplicates and never repeats a reused tag as new", () => {
+    const result = capNewTagsWithoutVocabulary(
+      { tags: ["agent", "agent"], new_tags: ["Agent", "新概念", "新概念"] },
+      { policy: "cap", maxNewTags: 5 },
+    );
+    expect(result.canonicalTags).toEqual(["agent"]);
+    expect(result.newTags).toEqual(["新概念"]);
   });
 });

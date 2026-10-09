@@ -40,7 +40,10 @@ import {
 } from "@karakeep/shared/utils/tagValidation";
 import { matchTagsForAbsorption } from "@karakeep/shared/tagAbsorption";
 import { buildCanonicalVocabulary } from "@karakeep/shared/tagVocabulary";
-import { partitionTagSuggestions } from "@karakeep/shared/tagOutput";
+import {
+  capNewTagsWithoutVocabulary,
+  partitionTagSuggestions,
+} from "@karakeep/shared/tagOutput";
 import { taggingResponseSchema } from "@karakeep/shared/taggingSchema";
 import { normalizeTagNameForAlias } from "@karakeep/shared/tagGovernance";
 import { WebhooksService } from "@karakeep/trpc/models/webhooks.service";
@@ -672,9 +675,23 @@ async function buildVocabulary(
     .orderBy(desc(count(tagsOnBookmarks.tagId)))
     .limit(config.maxTags);
 
-  const neighborTags =
-    (await getPotentiallyRelevantTags(jobId, bookmarkId, userId, embedding)) ??
-    [];
+  // The neighbour lookup goes through the vector store and is best-effort: a
+  // missing or not-yet-indexed vector must not throw away the global
+  // vocabulary, or the new-tag gate would silently degrade to "allow".
+  let neighborTags: string[] = [];
+  try {
+    neighborTags =
+      (await getPotentiallyRelevantTags(
+        jobId,
+        bookmarkId,
+        userId,
+        embedding,
+      )) ?? [];
+  } catch (e) {
+    logger.warn(
+      `[inference][${jobId}] Neighbour tag lookup failed for bookmark ${bookmarkId}, continuing with global tags only: ${e}`,
+    );
+  }
 
   const vocabulary = buildCanonicalVocabulary(globalTags, neighborTags, {
     maxTags: config.maxTags,
@@ -781,17 +798,20 @@ export async function runTagging(
 
   // Split the reuse channel from the new-tag channel. Reuse entries that are
   // not in the vocabulary are demoted, so a model that ignores the prompt
-  // still cannot mint near-duplicate tags.
+  // still cannot mint near-duplicate tags. When the vocabulary is unavailable
+  // the gate must not silently disappear: the new-tag limit still applies.
   const hasVocabulary =
     canonicalVocabulary !== undefined && canonicalVocabulary.length > 0;
-  const { canonicalTags, newTags, droppedTags, demotedTags } = hasVocabulary
+  const partitionOptions = {
+    policy: serverConfig.tagVocabulary.newTagPolicy,
+    maxNewTags: serverConfig.tagVocabulary.maxNewTagsPerBookmark,
+  };
+  const modelOutput = { tags: inferred.tags, new_tags: inferred.newTags };
+  let { canonicalTags, newTags, droppedTags, demotedTags } = hasVocabulary
     ? partitionTagSuggestions(
-        { tags: inferred.tags, new_tags: inferred.newTags },
+        modelOutput,
         canonicalVocabulary!,
-        {
-          policy: serverConfig.tagVocabulary.newTagPolicy,
-          maxNewTags: serverConfig.tagVocabulary.maxNewTagsPerBookmark,
-        },
+        partitionOptions,
       )
     : {
         canonicalTags: inferred.tags,
@@ -799,6 +819,13 @@ export async function runTagging(
         droppedTags: [],
         demotedTags: [],
       };
+  if (!hasVocabulary && serverConfig.tagVocabulary.enabled) {
+    logger.warn(
+      `[inference][${jobId}] Canonical vocabulary unavailable for bookmark "${bookmark.id}"; reuse channel passed through and new tags limited by policy "${partitionOptions.policy}" (max ${partitionOptions.maxNewTags}).`,
+    );
+    ({ canonicalTags, newTags, droppedTags, demotedTags } =
+      capNewTagsWithoutVocabulary(modelOutput, partitionOptions));
+  }
 
   addLogFields<"inferenceWorker.run">({
     "inference.tagging.vocabulary_size": canonicalVocabulary?.length ?? 0,
