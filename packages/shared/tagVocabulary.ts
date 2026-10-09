@@ -10,6 +10,13 @@
 export interface TagUsage {
   name: string;
   usage: number;
+  /**
+   * True when the tagging model has already declared this tag an entity.
+   * Entities bypass the `minUsage` cut-off: a brand-new product name is
+   * necessarily low-usage at first, and dropping it would make the model mint
+   * a duplicate spelling on the next bookmark.
+   */
+  isEntity?: boolean;
 }
 
 export interface VocabularyOptions {
@@ -49,7 +56,7 @@ export function buildCanonicalVocabulary(
   const excluded = (name: string) => isExcluded?.(name) ?? false;
 
   const rankedGlobal = globalTags
-    .filter((t) => t.usage >= minUsage && !excluded(t.name))
+    .filter((t) => (t.isEntity || t.usage >= minUsage) && !excluded(t.name))
     .sort(
       (a, b) =>
         b.usage - a.usage ||

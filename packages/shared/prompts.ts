@@ -1,4 +1,5 @@
 import type { ZTagStyle } from "./types/users";
+import type { CanonicalTagEntry, TagOutputContractOptions } from "./utils/tag";
 import {
   getCanonicalTagsPrompt,
   getCuratedTagsPrompt,
@@ -13,12 +14,32 @@ function preprocessContent(content: string) {
   return content.replace(/(\s){10,}/g, "$1");
 }
 
+export interface TaggingQuotas {
+  conceptMax: number;
+  entityMax: number;
+}
+
+type Vocabulary = (string | CanonicalTagEntry)[];
+
+function buildTagOutputContract(
+  vocabulary: Vocabulary | undefined,
+  quotas: TaggingQuotas,
+): string {
+  const options: TagOutputContractOptions = {
+    hasCanonicalTags: !!vocabulary?.length,
+    conceptMax: quotas.conceptMax,
+    entityMax: quotas.entityMax,
+  };
+  return getTagOutputContractPrompt(options);
+}
+
 export function buildImagePrompt(
   lang: string,
   customPrompts: string[],
   tagStyle: ZTagStyle,
   curatedTags?: string[],
-  potentialRelevantTags?: string[],
+  potentialRelevantTags?: Vocabulary,
+  quotas: TaggingQuotas = { conceptMax: 2, entityMax: 4 },
 ) {
   const tagStyleInstruction = getTagStylePrompt(tagStyle);
   const curatedInstruction = getCuratedTagsPrompt(curatedTags);
@@ -30,7 +51,7 @@ export function buildImagePrompt(
 You are an expert whose responsibility is to help with automatic tagging for a read-it-later/bookmarking app.
 Analyze the attached image and suggest relevant tags that describe its key themes, topics, and main ideas. The rules are:
 - Prefer broad, reusable topic tags over one-off facts, examples, source organizations, page sections, or implementation details.
-- Do NOT create tags for specific project names, product codenames, person names, company names, or website names (e.g. repo names, app names, brand names). Express them as a broader technology or topic category instead (e.g. a repo page -> "open source" or its language, not the repo name).
+- Concrete product, project, tool and vendor names ARE valid tags (e.g. Codex, claude_code, Suricata). Declare them with "kind": "entity" and reuse the canonical spelling for the same product. Do NOT create tags for person names, website section names, or incidental UI text.
 - Reuse existing tags verbatim when one of the provided existing tags already fits; do not invent a new variant of an existing tag.
 - Include only retrieval-worthy tags that describe the saved item's intended content, not incidental UI or page chrome.
 - The tags must be in ${lang}.
@@ -41,13 +62,12 @@ Analyze the attached image and suggest relevant tags that describe its key theme
     - A Cloudflare/security check, CAPTCHA, bot check, anti-DDoS challenge, browser verification, or access-blocked page
     - Boilerplate content such as cookie consent, login walls, GDPR notices, navigation menus, or a blank/empty image
   In these cases, return an empty tags array. Do not tag the failure/interstitial page itself.
-- Aim for 3-5 tags. Tag count discipline: prefer fewer, broader tags. Exceeding 5 tags is a mistake.
-- If there are no good tags, leave the array empty.
+- Tag count discipline: prefer fewer, broader tags. There is no minimum - returning zero tags is fine.
 ${curatedInstruction}
 ${canonicalTagsInstruction}
 ${tagStyleInstruction}
 ${customPrompts && customPrompts.map((p) => `- ${p}`).join("\n")}
-${getTagOutputContractPrompt(!!potentialRelevantTags?.length)}`;
+${buildTagOutputContract(potentialRelevantTags, quotas)}`;
 }
 
 /**
@@ -59,7 +79,8 @@ export function constructTextTaggingPrompt(
   content: string,
   tagStyle: ZTagStyle,
   curatedTags?: string[],
-  potentialRelevantTags?: string[],
+  potentialRelevantTags?: Vocabulary,
+  quotas: TaggingQuotas = { conceptMax: 2, entityMax: 4 },
 ): string {
   const tagStyleInstruction = getTagStylePrompt(tagStyle);
   const curatedInstruction = getCuratedTagsPrompt(curatedTags);
@@ -71,7 +92,7 @@ export function constructTextTaggingPrompt(
 You are an expert whose responsibility is to help with automatic tagging for a read-it-later/bookmarking app.
 Analyze the TEXT_CONTENT below and suggest relevant tags that describe its key themes, topics, and main ideas. The rules are:
 - Prefer broad, reusable topic tags over one-off facts, examples, source organizations, page sections, or implementation details.
-- Do NOT create tags for specific project names, product codenames, person names, company names, or website names (e.g. repo names, app names, brand names). Express them as a broader technology or topic category instead (e.g. a repo page -> "open source" or its language, not the repo name).
+- Concrete product, project, tool and vendor names ARE valid tags (e.g. Codex, claude_code, Suricata). Declare them with "kind": "entity" and reuse the canonical spelling for the same product. Do NOT create tags for person names, website section names, or incidental UI text.
 - Reuse existing tags verbatim when one of the provided existing tags already fits; do not invent a new variant of an existing tag.
 - Include only retrieval-worthy tags that describe the saved item's intended content, not incidental page chrome.
 - The tags must be in ${lang}.
@@ -82,8 +103,7 @@ Analyze the TEXT_CONTENT below and suggest relevant tags that describe its key t
     - A Cloudflare/security check, CAPTCHA, bot check, anti-DDoS challenge, browser verification, or access-blocked page
     - Boilerplate content such as cookie consent, login walls, GDPR notices, navigation menus, or empty pages
   If useful metadata or other legitimate content remains, generate tags using only that information. Otherwise, return an empty tags array. Never tag the failure, interstitial, or boilerplate content itself.
-- Aim for 3-5 tags. Tag count discipline: prefer fewer, broader tags. Exceeding 5 tags is a mistake.
-- If there are no good tags, leave the array empty.
+- Tag count discipline: prefer fewer, broader tags. There is no minimum - returning zero tags is fine.
 ${curatedInstruction}
 ${canonicalTagsInstruction}
 ${tagStyleInstruction}
@@ -92,7 +112,7 @@ ${customPrompts && customPrompts.map((p) => `- ${p}`).join("\n")}
 <TEXT_CONTENT>
 ${content}
 </TEXT_CONTENT>
-${getTagOutputContractPrompt(!!potentialRelevantTags?.length)}`;
+${buildTagOutputContract(potentialRelevantTags, quotas)}`;
 }
 
 /**

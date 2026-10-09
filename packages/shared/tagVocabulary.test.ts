@@ -30,6 +30,19 @@ describe("buildCanonicalVocabulary", () => {
     expect(vocabulary).toEqual(["常用"]);
   });
 
+  it("keeps low-usage entities, because a new product name starts at 1 use", () => {
+    const vocabulary = buildCanonicalVocabulary(
+      [
+        { name: "常用", usage: 10 },
+        { name: "opencode", usage: 1, isEntity: true },
+        { name: "一次性概念", usage: 1 },
+      ],
+      [],
+      baseOptions,
+    );
+    expect(vocabulary).toEqual(["常用", "opencode"]);
+  });
+
   it("ranks by usage and prefers shorter tags on ties", () => {
     const vocabulary = buildCanonicalVocabulary(
       [

@@ -122,7 +122,11 @@ const allEnv = z.object({
   TAG_VOCABULARY_MAX_CHARS: z.coerce.number().int().min(1).default(1400),
   TAG_VOCABULARY_MIN_USAGE: z.coerce.number().int().min(1).default(2),
   TAG_NEW_TAG_POLICY: z.enum(["allow", "cap", "fold_only"]).default("cap"),
+  // Concept-axis quota. Kept under the original name so existing deployments
+  // (and the "do not touch it" rule) stay valid.
   TAG_NEW_TAG_MAX_PER_BOOKMARK: z.coerce.number().int().min(0).default(2),
+  // Entity-axis quota (concrete product/tool names), independent of concepts.
+  TAG_NEW_TAG_MAX_ENTITIES: z.coerce.number().int().min(0).default(4),
   TAG_NEW_TAG_ABSORPTION_THRESHOLD: z.coerce
     .number()
     .min(0)
@@ -409,6 +413,7 @@ const serverConfigSchema = allEnv.transform((val, ctx) => {
       minUsage: val.TAG_VOCABULARY_MIN_USAGE,
       newTagPolicy: val.TAG_NEW_TAG_POLICY,
       maxNewTagsPerBookmark: val.TAG_NEW_TAG_MAX_PER_BOOKMARK,
+      maxNewEntitiesPerBookmark: val.TAG_NEW_TAG_MAX_ENTITIES,
       newTagAbsorptionThreshold: val.TAG_NEW_TAG_ABSORPTION_THRESHOLD,
     },
     tagGovernance: {

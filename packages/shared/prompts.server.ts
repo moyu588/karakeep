@@ -1,6 +1,8 @@
 import type { Tiktoken } from "js-tiktoken";
 
 import type { ZTagStyle } from "./types/users";
+import type { CanonicalTagEntry } from "./utils/tag";
+import type { TaggingQuotas } from "./prompts";
 import { constructSummaryPrompt, constructTextTaggingPrompt } from "./prompts";
 
 let encoding: Tiktoken | null = null;
@@ -50,7 +52,8 @@ export async function buildTextPrompt(
   contextLength: number,
   tagStyle: ZTagStyle,
   curatedTags?: string[],
-  potentialRelevantTags?: string[],
+  potentialRelevantTags?: (string | CanonicalTagEntry)[],
+  quotas?: TaggingQuotas,
 ): Promise<string> {
   content = preprocessContent(content);
   const promptTemplate = constructTextTaggingPrompt(
@@ -60,6 +63,7 @@ export async function buildTextPrompt(
     tagStyle,
     curatedTags,
     potentialRelevantTags,
+    quotas,
   );
   const promptSize = await calculateNumTokens(promptTemplate);
   const available = Math.max(0, contextLength - promptSize);
@@ -72,6 +76,7 @@ export async function buildTextPrompt(
     tagStyle,
     curatedTags,
     potentialRelevantTags,
+    quotas,
   );
 }
 

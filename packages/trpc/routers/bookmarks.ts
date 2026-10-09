@@ -38,6 +38,7 @@ import logger from "@karakeep/shared/logger";
 import { buildSummaryPrompt } from "@karakeep/shared/prompts.server";
 import { EnqueueOptions } from "@karakeep/shared/queueing";
 import { getRateLimitClient } from "@karakeep/shared/ratelimiting";
+import { PENDING_READ_TAG } from "@karakeep/shared/tagEquivalence";
 import { FilterQuery, getSearchClient } from "@karakeep/shared/search";
 import { parseSearchQuery } from "@karakeep/shared/searchQueryParser";
 import type {
@@ -1393,6 +1394,7 @@ export const bookmarksAppRouter = router({
 
       const res = await ctx.db.transaction((tx) => {
         let numChanges = 0;
+        const removedTagIds = [...idsToRemove];
         // Detaches
         if (idsToRemove.length > 0) {
           const res = tx
@@ -1423,6 +1425,39 @@ export const bookmarksAppRouter = router({
           numChanges += res.changes;
         }
 
+        // 待读 is the "no human has labelled this yet" queue, so attaching any
+        // human tag clears it from the bookmark.
+        const hasHumanAttach = allIdsToAttach.some(
+          (id) => (tagIdToAttachedBy.get(id) ?? "human") === "human",
+        );
+        if (hasHumanAttach) {
+          const pendingReadTag = tx
+            .select({ id: bookmarkTags.id })
+            .from(bookmarkTags)
+            .where(
+              and(
+                eq(bookmarkTags.userId, ctx.user.id),
+                eq(bookmarkTags.name, PENDING_READ_TAG),
+              ),
+            )
+            .get();
+          if (pendingReadTag && !allIdsToAttach.includes(pendingReadTag.id)) {
+            const detached = tx
+              .delete(tagsOnBookmarks)
+              .where(
+                and(
+                  eq(tagsOnBookmarks.bookmarkId, input.bookmarkId),
+                  eq(tagsOnBookmarks.tagId, pendingReadTag.id),
+                ),
+              )
+              .run();
+            if (detached.changes > 0) {
+              numChanges += detached.changes;
+              removedTagIds.push(pendingReadTag.id);
+            }
+          }
+        }
+
         // Update bookmark modified timestamp
         if (numChanges > 0) {
           tx.update(bookmarks)
@@ -1439,7 +1474,7 @@ export const bookmarksAppRouter = router({
         return {
           bookmarkId: input.bookmarkId,
           attached: allIdsToAttach,
-          detached: idsToRemove,
+          detached: removedTagIds,
           numChanges,
         };
       });

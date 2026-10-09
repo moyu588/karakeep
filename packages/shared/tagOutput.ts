@@ -1,43 +1,141 @@
 /**
- * Splits the tagging model's dual-channel output into "reuse" and "new tag"
- * buckets, validates the reuse bucket against the canonical vocabulary, and
- * applies the new-tag policy.
+ * Splits the tagging model's dual-channel output into the reuse channel and
+ * the per-axis "new tag" channels, validates reuse against the canonical
+ * vocabulary, and applies the per-axis creation quotas.
+ *
+ * Tag axes (v2 tag-precision rules):
+ *  - concept: at most `conceptMax` new tags per bookmark;
+ *  - entity:  at most `entityMax` new tags per bookmark;
+ *  - event:   never created - the bookmark falls back to the reserved 待读 tag.
  *
  * Pure logic only (unit-testable). The worker wires it into the tagging
  * pipeline before any tag is written to the database.
  */
 
 import { normalizeVocabularyName } from "./tagVocabulary";
-
-export type NewTagPolicy = "allow" | "cap" | "fold_only";
+import { isReservedTag } from "./tagEquivalence";
+import type { TagKind } from "./taggingSchema";
 
 export interface TaggingModelOutput {
   tags?: string[];
-  new_tags?: string[];
+  new_tags?: {
+    name: string;
+    kind?: TagKind | null;
+    definition?: string | null;
+  }[];
 }
 
 export interface PartitionOptions {
-  policy: NewTagPolicy;
-  /** Used when policy is "cap". */
-  maxNewTags: number;
+  /** Per-bookmark quota for `kind = "concept"`. */
+  conceptMax: number;
+  /** Per-bookmark quota for `kind = "entity"`. */
+  entityMax: number;
 }
 
 export interface PartitionResult {
   /** Vocabulary tags, in the vocabulary's own spelling. Safe to reuse as-is. */
   canonicalTags: string[];
-  /** New tags still allowed to be created after the policy gate. */
+  /** Newly created tags (concepts followed by entities), within quota. */
   newTags: string[];
-  /** Proposed new tags that the policy dropped. */
+  newConceptTags: string[];
+  newEntityTags: string[];
+  /** One-line definitions to remember for entities that are being created. */
+  entityDefinitions: { name: string; definition: string }[];
+  /** `kind = "event"` suggestions: never created, the bookmark gets 待读. */
+  droppedEventTags: string[];
+  /** New tags rejected because their axis quota was exhausted. */
   droppedTags: string[];
   /** "tags" entries that were not in the vocabulary and got demoted. */
   demotedTags: string[];
+  /** System tags the model tried to emit (待读 / 已读 / 待整理). */
+  reservedTags: string[];
+}
+
+interface ClassifiedEntry {
+  name: string;
+  kind: TagKind;
+  definition?: string;
+}
+
+function emptyResult(): PartitionResult {
+  return {
+    canonicalTags: [],
+    newTags: [],
+    newConceptTags: [],
+    newEntityTags: [],
+    entityDefinitions: [],
+    droppedEventTags: [],
+    droppedTags: [],
+    demotedTags: [],
+    reservedTags: [],
+  };
 }
 
 /**
- * Partitions a model response. Anything in "tags" that is not in the
- * vocabulary is demoted to a new tag, so a model that ignores the prompt still
- * cannot create near-duplicate rows. "new_tags" entries that actually exist in
- * the vocabulary are promoted back into the reuse bucket.
+ * The model is not supposed to declare state tags, and a missing `kind` is
+ * treated as a concept: concepts have the tighter quota, so an undeclared
+ * entity stays conservative instead of silently bypassing the gate.
+ */
+function classifyEntry(raw: {
+  name: string;
+  kind?: TagKind | null;
+  definition?: string | null;
+}): ClassifiedEntry {
+  return {
+    name: raw.name.trim(),
+    kind: raw.kind ?? "concept",
+    ...(raw.definition?.trim() ? { definition: raw.definition.trim() } : {}),
+  };
+}
+
+/**
+ * Applies the per-axis quotas to the ordered candidate list, preserving model
+ * order inside each axis. Concepts and entities do not compete for quota.
+ */
+function applyPerAxisQuotas(
+  candidates: ClassifiedEntry[],
+  options: PartitionOptions,
+): PartitionResult {
+  const result = emptyResult();
+  const conceptQuota = Math.max(0, options.conceptMax);
+  const entityQuota = Math.max(0, options.entityMax);
+
+  for (const candidate of candidates) {
+    if (candidate.kind === "event") {
+      result.droppedEventTags.push(candidate.name);
+      continue;
+    }
+    if (candidate.kind === "entity") {
+      if (result.newEntityTags.length >= entityQuota) {
+        result.droppedTags.push(candidate.name);
+        continue;
+      }
+      result.newEntityTags.push(candidate.name);
+      if (candidate.definition) {
+        result.entityDefinitions.push({
+          name: candidate.name,
+          definition: candidate.definition,
+        });
+      }
+      continue;
+    }
+    if (result.newConceptTags.length >= conceptQuota) {
+      result.droppedTags.push(candidate.name);
+      continue;
+    }
+    result.newConceptTags.push(candidate.name);
+  }
+
+  result.newTags = [...result.newConceptTags, ...result.newEntityTags];
+  return result;
+}
+
+/**
+ * Full gate, used when the canonical vocabulary is available: anything in the
+ * `tags` channel that is not in the vocabulary is demoted to a new-tag
+ * candidate, so a model that ignores the prompt still cannot mint
+ * near-duplicates, and `new_tags` entries that exist in the vocabulary are
+ * promoted back into the reuse channel.
  */
 export function partitionTagSuggestions(
   output: TaggingModelOutput,
@@ -46,13 +144,16 @@ export function partitionTagSuggestions(
 ): PartitionResult {
   const canonicalByKey = new Map<string, string>();
   for (const name of vocabulary) {
+    if (isReservedTag(name)) {
+      continue;
+    }
     const key = normalizeVocabularyName(name);
     if (key && !canonicalByKey.has(key)) {
       canonicalByKey.set(key, name.trim());
     }
   }
 
-  const canonicalTags: string[] = [];
+  const result = emptyResult();
   const seenCanonical = new Set<string>();
   const addCanonical = (name: string): boolean => {
     const key = normalizeVocabularyName(name);
@@ -61,53 +162,65 @@ export function partitionTagSuggestions(
       return false;
     }
     seenCanonical.add(key);
-    canonicalTags.push(canonical);
+    result.canonicalTags.push(canonical);
     return true;
   };
 
-  const demotedTags: string[] = [];
   for (const raw of output.tags ?? []) {
     const name = raw.trim();
     if (!name) {
       continue;
     }
+    if (isReservedTag(name)) {
+      result.reservedTags.push(name);
+      continue;
+    }
     if (!addCanonical(name)) {
-      demotedTags.push(name);
+      result.demotedTags.push(name);
     }
   }
 
-  const proposed: string[] = [];
-  const seenProposed = new Set<string>();
-  for (const raw of [...(output.new_tags ?? []), ...demotedTags]) {
-    const name = raw.trim();
-    const key = normalizeVocabularyName(name);
-    if (!key) {
-      continue;
+  const seen = new Set<string>();
+  const candidates: ClassifiedEntry[] = [];
+  const collect = (name: string, entry: Partial<ClassifiedEntry>) => {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      return;
     }
-    if (addCanonical(name)) {
-      continue;
+    if (isReservedTag(trimmed)) {
+      result.reservedTags.push(trimmed);
+      return;
     }
-    if (seenProposed.has(key)) {
-      continue;
+    const key = normalizeVocabularyName(trimmed);
+    if (!key || seen.has(key)) {
+      return;
     }
-    seenProposed.add(key);
-    proposed.push(name);
+    seen.add(key);
+    if (addCanonical(trimmed)) {
+      return;
+    }
+    candidates.push({
+      name: trimmed,
+      kind: entry.kind ?? "concept",
+      ...(entry.definition ? { definition: entry.definition } : {}),
+    });
+  };
+
+  for (const raw of output.new_tags ?? []) {
+    collect(raw.name, classifyEntry(raw));
+  }
+  for (const name of result.demotedTags) {
+    collect(name, {});
   }
 
-  const maxNewTags = Math.max(0, options.maxNewTags);
-  let newTags: string[];
-  const droppedTags: string[] = [];
-  if (options.policy === "fold_only") {
-    newTags = [];
-    droppedTags.push(...proposed);
-  } else if (options.policy === "cap") {
-    newTags = proposed.slice(0, maxNewTags);
-    droppedTags.push(...proposed.slice(newTags.length));
-  } else {
-    newTags = [...proposed];
-  }
-
-  return { canonicalTags, newTags, droppedTags, demotedTags };
+  const quotas = applyPerAxisQuotas(candidates, options);
+  result.newTags = quotas.newTags;
+  result.newConceptTags = quotas.newConceptTags;
+  result.newEntityTags = quotas.newEntityTags;
+  result.entityDefinitions = quotas.entityDefinitions;
+  result.droppedEventTags = quotas.droppedEventTags;
+  result.droppedTags = quotas.droppedTags;
+  return result;
 }
 
 /**
@@ -115,51 +228,58 @@ export function partitionTagSuggestions(
  * vocabulary build failed, or the user has no reusable tags yet).
  *
  * The reuse channel cannot be validated without a vocabulary, so it passes
- * through untouched. The new-tag channel still honours the configured policy,
- * so a vocabulary outage cannot silently let long-tail tags back in.
- * "fold_only" degrades to the cap here: with nothing to reuse, dropping every
- * suggestion would leave the bookmark untagged.
+ * through untouched. The per-axis quotas still apply, so a vocabulary outage
+ * cannot silently let long-tail tags back in.
  */
-export function capNewTagsWithoutVocabulary(
+export function classifyWithoutVocabulary(
   output: TaggingModelOutput,
   options: PartitionOptions,
 ): PartitionResult {
-  const canonicalTags: string[] = [];
+  const result = emptyResult();
   const seenCanonical = new Set<string>();
+
   for (const raw of output.tags ?? []) {
     const name = raw.trim();
+    if (!name) {
+      continue;
+    }
+    if (isReservedTag(name)) {
+      result.reservedTags.push(name);
+      continue;
+    }
     const key = normalizeVocabularyName(name);
     if (!key || seenCanonical.has(key)) {
       continue;
     }
     seenCanonical.add(key);
-    canonicalTags.push(name);
+    result.canonicalTags.push(name);
   }
 
-  const proposed: string[] = [];
-  const seenProposed = new Set<string>();
+  const seen = new Set<string>();
+  const candidates: ClassifiedEntry[] = [];
   for (const raw of output.new_tags ?? []) {
-    const name = raw.trim();
-    const key = normalizeVocabularyName(name);
-    if (!key || seenCanonical.has(key) || seenProposed.has(key)) {
+    const name = raw.name.trim();
+    if (!name) {
       continue;
     }
-    seenProposed.add(key);
-    proposed.push(name);
+    if (isReservedTag(name)) {
+      result.reservedTags.push(name);
+      continue;
+    }
+    const key = normalizeVocabularyName(name);
+    if (!key || seen.has(key) || seenCanonical.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    candidates.push(classifyEntry(raw));
   }
 
-  // "allow" is an explicit opt-out and "fold_only" cannot be honoured without
-  // a vocabulary, so both fall back to the same cap.
-  const maxNewTags =
-    options.policy === "allow"
-      ? proposed.length
-      : Math.max(0, options.maxNewTags);
-  const newTags = proposed.slice(0, maxNewTags);
-
-  return {
-    canonicalTags,
-    newTags,
-    droppedTags: proposed.slice(newTags.length),
-    demotedTags: [],
-  };
+  const quotas = applyPerAxisQuotas(candidates, options);
+  result.newTags = quotas.newTags;
+  result.newConceptTags = quotas.newConceptTags;
+  result.newEntityTags = quotas.newEntityTags;
+  result.entityDefinitions = quotas.entityDefinitions;
+  result.droppedEventTags = quotas.droppedEventTags;
+  result.droppedTags = quotas.droppedTags;
+  return result;
 }
